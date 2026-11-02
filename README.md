@@ -4,7 +4,7 @@
 
 Loops 是一个早期 Mac 桌面客户端：描述任务，让 AI 生成流程，查看真实运行结果，再通过对话调整并保存。自动化任务可以定时或监听输入，串联已保存的 Loop 并投递结果。
 
-目前以 macOS Apple Silicon 为验证平台。Windows、Linux 和 Intel Mac 尚未完成客户端验收。项目采用 [Apache-2.0](LICENSE) 许可证；第三方组件遵循各自许可证。Copyright 2026 livingmagic，见 [NOTICE](NOTICE)。首版仅提供源码；安装包的第三方声明核对仍待完成。
+项目采用 [Apache-2.0](LICENSE) 许可证；第三方组件遵循各自许可证。Copyright 2026 livingmagic，见 [NOTICE](NOTICE)。首版仅提供源码；安装包的第三方声明核对仍待完成。
 
 ## 能做什么
 
@@ -17,7 +17,7 @@ Loops 是一个早期 Mac 桌面客户端：描述任务，让 AI 生成流程�
 
 ## 快速开始
 
-准备 macOS、Node.js 22.19+、Python 3.13 和 Git。下载 [源码预览版](https://github.com/livingmagic/loops/releases) 或克隆后安装：
+当前开发与打包面向 Apple Silicon Mac，需要 Node.js 22.19+、Python 3.13 和 Git。下载 [源码预览版](https://github.com/livingmagic/loops/releases) 或克隆后安装：
 
 ```sh
 git clone https://github.com/livingmagic/loops.git
