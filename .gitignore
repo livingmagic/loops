@@ -43,9 +43,10 @@ htmlcov/
 *.log
 .DS_Store
 
-# QA scripts/reports and adopted design sources are tracked by default.
-# Generated evidence, unused concepts and temporary exports stay local.
-**/qa/**/artifacts/
+# Local exploratory checks, reports, screenshots and scratch files.
+qa/
+
+# Unused design concepts and temporary exports.
 **/design/**/drafts/
 **/design/**/exports/
 

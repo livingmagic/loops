@@ -15,7 +15,7 @@
 - 保存与执行成功独立。保存时归档定义、资源配置、脚本与版本；历史运行继续保留原版本。重启后未完成执行标为中断，不自动重放外部提交。
 - 结果来自真实 SDK、进程退出码、测试日志与文件，没有前端定时器推进或预设成功结果。
 
-历史验证已覆盖本机 Codex 修复、真实 Pi + DeepSeek 自然语言搭建、通用流程试跑与保存恢复。手工流程、模型替身和真实服务结果分别记录；公开摘要见 [验收结论](qa/acceptance.md)，详细运行证据仅在本机保留。
+历史验证已覆盖本机 Codex 修复、真实 Pi + DeepSeek 自然语言搭建、通用流程试跑与保存恢复。手工流程、模型替身和真实服务结果需要如实区分；临时证据仅在本机保留。
 
 **远程交付**：通用流程可通过明确配置的脚本和命令执行外部操作，不再内置工程专用的提交、GitHub 草稿 PR 与同输入 PR 复验路径。历史样例仅交付本地文件，没有创建或验收真实 PR。自动化任务现已支持 Python 定时与监听、多个已保存 Loop 串联及输出投递，仍没有云端常驻调度或发布使用端。
 
@@ -27,7 +27,7 @@
 
 脚本接口、版本及本机连接配置见 [执行约定](../runtime/AUTOMATIONS.md)。每版脚本使用独立标准库 venv，不自动安装第三方依赖。关闭窗口继续后台运行，彻底退出或电脑休眠期间不执行；外部 webhook 需要可达入口。
 
-自动化验证范围见 [验收结论](qa/acceptance.md)。`node scripts/live-automation-chat.mjs` 验证真实多轮对话、修改、保存、试跑、交付与重启继续，会消耗模型额度。`node scripts/live-automation-journey.mjs` 使用隔离目录、真实 Python 和本机真实 Pi + DeepSeek 验证采集、串联、投递与重启，会消耗模型额度。示例中的两个 Python Loop 为手工测试定义，不代表 Codex 或 AI 业务分析能力的新增验收。
+`node scripts/live-automation-chat.mjs` 验证真实多轮对话、修改、保存、试跑、交付与重启继续，会消耗模型额度。`node scripts/live-automation-journey.mjs` 使用隔离目录、真实 Python 和本机真实 Pi + DeepSeek 验证采集、串联、投递与重启，会消耗模型额度。示例中的两个 Python Loop 为手工测试定义，不代表 Codex 或 AI 业务分析能力的新增验收。
 
 双击 `scripts/open-latest.command` 可打开当前打包客户端，使用正常 Application Support 数据与项目现有本机模型配置，不进入验收数据库。
 
@@ -73,14 +73,14 @@ node scripts/live-generic-journey.mjs engineering
 
 `live-generic-journey.mjs` 使用真实 Pi、DeepSeek、Codex 与本地样例检查搭建、执行、失败反馈、业务反馈、换输入再执行和保存，会消耗模型额度。它可从保存的阶段继续，当前记录在 `.local/generic-acceptance-20261030`，不复用旧格式的验收状态。`sales` 仅运行 Python，`engineering` 调用真实 Codex，需在具备本机执行权限的环境中运行。两种样例统一使用 resources、inputDefaults 和按 ID 映射的运行输入。
 
-可复用脚本与证据目录见 [验收说明](qa/README.md)。依赖旧验收数据库的一次性启动、修复和复查脚本已移入本机归档，不作为公开执行入口。
+长期测试保存在 `tests/`，真实服务检查命令见上文。`qa/` 仅用于本机临时检查，整体忽略，无需维护验收报告。
 
 ## 打包 Mac 应用
 
-在 `runtime/` 下用 uv 准备可随应用携带的 Python：
+在 `runtime/` 下准备与许可清单对应的固定 Python 发行版：
 
 ```sh
-uv python install 3.13 --install-dir .python --no-bin
+sh setup-bundled-python.sh
 ```
 
 然后从 `desktop/` 执行：
@@ -92,8 +92,10 @@ npm run package:mac
 
 输出为 `out/Loops-darwin-arm64/Loops.app`（当前机器为 Apple Silicon）。应用携带 Python、SDK 与固定 Codex 运行时。打包脚本从 requirements.lock 重新安装 Python 依赖，不复制开发虚拟环境；仅纳入客户端运行目录，并生成第三方许可清单。`Contents/Resources/legal/` 保存项目与依赖声明。当前为本机开发构建，尚未做开发者签名、公证、安装器与自动更新；第三方二进制声明核对尚未完成，不能作为公开安装包分发，见 [第三方组件清单](../THIRD_PARTY.md)。
 
-可用 `LOOPS_PACKAGE_OUT` 指定隔离输出目录。打包后在 `desktop/` 执行 `node qa/check-release-package.mjs /absolute/path/to/Loops.app`，可核对包内依赖与许可文件，并使用手工定义的 Python 流程验证执行、保存和重启恢复；不调用模型，不代表真实 AI 对话验收。
+可用 `LOOPS_PACKAGE_OUT` 指定隔离输出目录。打包后在 `desktop/` 执行 `npm run test:package -- /absolute/path/to/Loops.app`，可核对包内依赖与许可文件，并使用手工定义的 Python 流程验证执行、保存和重启恢复；不调用模型，不代表真实 AI 对话验收。
 
 应用图标采用蓝底白色立体带状双回环，Dock、对话头像与网页标签共用 `public/assets/loops-icon.png`，Mac 打包使用 `assets/loops.icns`。设计源稿保存在 `design/app-icon/`；修改源稿后，在本目录执行 `swift scripts/export-icon.swift` 重新导出资源，再重新构建、打包。`design/drafts/icon-v2/` 是未采用的扁平几何尝试。
 
 本版本依赖本机登录及项目授权，未承诺对不可信仓库提供完整的进程、网络和凭证隔离；Codex 使用其 workspace-write 沙箱和自动审批审查，项目测试命令由本地执行器按约定启动。面向组织部署前还需要完善权限配置和外部操作恢复。
+
+签名、公证所需的团队、证书与本机凭证配置见 [Mac 分发说明](MAC_RELEASE.md)。
