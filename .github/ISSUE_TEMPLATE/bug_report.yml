@@ -1,0 +1,30 @@
+name: 问题反馈
+description: 报告可以复现的产品或安装问题
+body:
+  - type: markdown
+    attributes:
+      value: "请先阅读 SECURITY.md。不要在公开反馈中上传密钥、完整对话、数据库或未脱敏运行目录。安全漏洞请使用私密报告渠道。"
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境
+      description: macOS 版本、芯片架构、代码版本或提交、开发启动还是本机打包。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      description: 请使用不含敏感信息的最小样例。
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: 预期和实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 脱敏错误信息

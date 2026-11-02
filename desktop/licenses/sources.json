@@ -1,0 +1,27 @@
+[
+  {
+    "file": "pi-LICENSE.txt",
+    "source": "https://raw.githubusercontent.com/earendil-works/pi/4a080252f06caf63a525d7873c5d94d3c23887e0/LICENSE",
+    "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
+  },
+  {
+    "file": "codex-LICENSE.txt",
+    "source": "https://raw.githubusercontent.com/openai/codex/rust-v0.163.0/LICENSE",
+    "sha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"
+  },
+  {
+    "file": "codex-NOTICE.txt",
+    "source": "https://raw.githubusercontent.com/openai/codex/rust-v0.163.0/NOTICE",
+    "sha256": "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915"
+  },
+  {
+    "file": "standardwebhooks-LICENSE.txt",
+    "source": "https://raw.githubusercontent.com/standard-webhooks/standard-webhooks/ab6844147ce9cdb0d2dbf2e60d1ea85001fd2554/libraries/LICENSE",
+    "sha256": "5ec8c7b26b64d881a6706617bed25c049f97f2f35de034c756de8546fd6dbe27"
+  },
+  {
+    "file": "cpython-LICENSE.txt",
+    "source": "https://raw.githubusercontent.com/python/cpython/v3.13.12/LICENSE",
+    "sha256": "78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb"
+  }
+]

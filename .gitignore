@@ -1,0 +1,53 @@
+# Local credentials and machine configuration; retain the empty setup example.
+.env*
+!.env.example
+connections.local.json
+.aws/
+.ssh/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Dependencies, build outputs and bundled applications.
+node_modules/
+dist/
+out/
+.venv/
+.python/
+.vite/
+*.egg-info/
+*.app/
+*.dmg
+*.pkg
+*.zip
+*.tgz
+
+# Local Loop data, databases and test/tool caches.
+.local/
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage/
+htmlcov/
+*.tsbuildinfo
+*.log
+.DS_Store
+
+# QA scripts/reports and adopted design sources are tracked by default.
+# Generated evidence, unused concepts and temporary exports stay local.
+**/qa/**/artifacts/
+**/design/**/drafts/
+**/design/**/exports/
+
+# Local-only historical prototype; never include in the public source snapshot.
+/prototype/

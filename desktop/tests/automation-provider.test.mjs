@@ -1,0 +1,13 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createModels } from '@earendil-works/pi-ai';
+import { deepseekProvider } from '@earendil-works/pi-ai/providers/deepseek';
+import { automationProviderStream } from '../host/automation-agent.mjs';
+import { modelFailureMessage } from '../host/model-errors.mjs';
+function setup() { const collection=createModels();collection.setProvider(deepseekProvider());return {stream:automationProviderStream(collection),model:collection.getModel('deepseek','deepseek-flash')}; }
+const context={messages:[{role:'user',content:'test',timestamp:1}]};
+const errorResponse=status=>new Response(JSON.stringify({error:{message:'server failure',type:'service_unavailable_error'}}),{status,headers:{'Content-Type':'application/json','retry-after':'0'}});
+const success=()=>new Response('data: {"id":"test","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}\n\ndata: {"id":"test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',{headers:{'Content-Type':'text/event-stream'}});
+test('automation retries transient HTTP failures before streaming, with a bounded retry count (HTTP double)',async()=>{const {stream,model}=setup();let calls=0;let result=await stream(model,context,{apiKey:'test-only',fetch:async()=>++calls<3?errorResponse(503):success()}).result();assert.equal(calls,3);assert.equal(result.stopReason,'stop');assert.equal(result.content[0].text,'ok');calls=0;result=await stream(model,context,{apiKey:'test-only',fetch:async()=>{calls++;return errorResponse(503);}}).result();assert.equal(calls,3);assert.equal(result.stopReason,'error');assert.match(modelFailureMessage(new Error(result.errorMessage)),/503/);});
+test('automation does not retry auth errors or a cancelled provider request (HTTP double)',async()=>{const {stream,model}=setup();let calls=0;let result=await stream(model,context,{apiKey:'test-only',fetch:async()=>{calls++;return errorResponse(401);}}).result();assert.equal(calls,1);assert.match(modelFailureMessage(new Error(result.errorMessage)),/401/);const control=new AbortController();calls=0;result=await stream(model,context,{apiKey:'test-only',signal:control.signal,fetch:async()=>{calls++;control.abort();return errorResponse(503);}}).result();assert.equal(calls,1);assert.equal(result.stopReason,'aborted');});
+test('public error messages identify provider failures without echoing response bodies',()=>{for(const code of [401,402,429,503]){const message=modelFailureMessage(new Error(`${code}: fake-secret provider body`));assert.ok(message.includes(String(code)));assert.ok(!message.includes('fake-secret'));}assert.ok(!modelFailureMessage(new Error('fake-secret')).includes('fake-secret'));});
