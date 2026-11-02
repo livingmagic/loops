@@ -20,8 +20,13 @@
     "sha256": "5ec8c7b26b64d881a6706617bed25c049f97f2f35de034c756de8546fd6dbe27"
   },
   {
-    "file": "cpython-LICENSE.txt",
-    "source": "https://raw.githubusercontent.com/python/cpython/v3.13.12/LICENSE",
-    "sha256": "78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb"
+    "file": "ripgrep-notices.txt",
+    "source": "https://github.com/BurntSushi/ripgrep/tree/15.2.0",
+    "sha256": "9c444f4a803ee2e360e1f4a5728811561f40d880a11cfd5b7dd03a9f56559636"
+  },
+  {
+    "file": "python-notices.txt",
+    "source": "https://github.com/astral-sh/python-build-standalone/releases/tag/20260303",
+    "sha256": "531f2fd5de6c0c2f8374554c58e3996b9889f066d788a99d474a52ff6910b868"
   }
 ]

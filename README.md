@@ -66,6 +66,6 @@ Python 和直接命令以当前用户权限执行，可以访问本机文件及�
 - [第三方组件与素材](THIRD_PARTY.md)：许可来源及随包声明。
 - [流程接口](runtime/WORKFLOWS.md) · [自动化接口](runtime/AUTOMATIONS.md)。
 - [客户端与打包](desktop/README.md)。
-- [发布检查清单](desktop/qa/open-source-release.md)。
+- [开发与测试](desktop/README.md#检查和真实试跑) · [Mac 分发](desktop/MAC_RELEASE.md)。
 
-依赖、凭证、本机数据、安装包及 `qa/artifacts/` 不进入版本库。详细历史验收记录仅在本机归档；公开保留 [简短结论与复验入口](desktop/qa/README.md)。
+依赖、凭证、本机数据、安装包及整个 `qa/` 临时目录不进入版本库。

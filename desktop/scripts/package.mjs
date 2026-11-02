@@ -7,9 +7,10 @@ import { writeNpmNotices } from './third-party-notices.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const runtime = path.resolve(root, '../runtime');
-const pythonInstalls = (await fs.readdir(path.join(runtime, '.python'))).filter((name) => name.startsWith('cpython-'));
-if (!pythonInstalls.length) throw new Error('请先用 uv python install 3.13 --install-dir runtime/.python --no-bin 安装可打包的 Python。');
-const sourcePython = path.join(runtime, '.python', pythonInstalls.sort().at(-1));
+const sourcePython = path.join(runtime, '.python/cpython-3.13.12+20260303-macos-aarch64');
+await fs.access(path.join(sourcePython, 'bin/python3')).catch(() => {
+  throw new Error('请先执行 runtime/setup-bundled-python.sh 准备打包所需的 Python。');
+});
 await fs.mkdir(path.join(root, '.local'), { recursive: true });
 const staging = await fs.mkdtemp(path.join(root, '.local/package-'));
 const target = path.join(staging, 'runtime');

@@ -24,6 +24,7 @@ assert.deepEqual(distributions, expected, 'The package must contain only the loc
 for (const file of ['LICENSE', 'NOTICE', 'npm-notices.txt', 'electron-LICENSE', 'LICENSES.chromium.html', 'codex-NOTICE.txt']) {
   assert.ok((await fs.stat(path.join(resources, 'legal', file))).size > 0);
 }
+assert.ok((await fs.stat(path.join(resources, 'legal/python-notices.txt'))).size > 0);
 for (const file of ['.env.local', 'connections.local.json', 'qa', 'design', 'scripts', 'node_modules/@electron/packager']) {
   assert.equal(await fs.stat(path.join(application, file)).then(() => true, () => false), false, `Unexpected bundled file: ${file}`);
 }
