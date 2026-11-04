@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { MODEL_IDLE_MESSAGE } from './model-stream.mjs';
+import { FailureReviews } from './failure-reviews.mjs';
 import { EventEmitter } from 'node:events';
 import { Engine } from './engine.mjs';
 import { converse } from './agent.mjs';
@@ -15,10 +16,16 @@ export class Host extends EventEmitter {
     super();
     this.options = options; this.models = new ModelSettings(options); this.engine = new Engine(options); this.busy = new Map(); this.deleting = new Set(); this.automationJobs = new Map(); this.automationStreams = new Map();
     this.loopJobs = new Map();
+    this.failureReviews = new FailureReviews({
+      busy: id => this.busy.has(id) || this.deleting.has(id),
+      review: (loopId, runId) => this.reviewFailedRun(loopId, runId),
+      onError: (loopId) => this.emit('event', { event: 'connection_error', loopId, message: '失败原因分析未能启动，运行记录已保留，请继续对话重试。' }),
+    });
     this.closing = false; this.resumePending = false; this.resumeJob = null;
     this.connectorDescriptions = new ConnectorDescriptions(this.engine, () => this.models.config());
     this.engine.on('event', (event) => {
       this.emit('event', event);
+      if (event.event === 'state') this.failureReviews.observe(event.loops);
       if (event.event === 'connector_state') this.connectorDescriptions.schedule();
       if (['connector_state', 'automation_state'].includes(event.event)) this.scheduleConnectorResumes();
     });
@@ -72,6 +79,35 @@ export class Host extends EventEmitter {
     });
     this.automationJobs.set(key, job);
     job.catch(() => {}); // An engine-exit event already reports transport failures.
+  }
+  async reviewFailedRun(loopId, runId) {
+    if (this.closing) return;
+    const controller = new AbortController();
+    this.busy.set(loopId, controller);
+    try {
+      if (!await this.engine.call('claim_failure_review', { loopId, runId })) { this.busy.delete(loopId); return; }
+      const config = this.models.config();
+      if (!config.key) {
+        await this.engine.call('message', { loopId, role: 'error', text: '运行失败，但 Loops AI 尚未配置模型，暂时无法分析和修复。请在设置中配置对话模型后继续；失败记录已保留。' });
+        this.busy.delete(loopId); return;
+      }
+      this.startLoopConversation({ loopId, controller, config, text: `平台运行事件：运行 ${runId} 已失败。请读取真实记录，分析原因；在原授权范围内能够自动修复的，修复、保存并用原输入验证。需要用户介入时说明证据、原因和具体所需操作。不要把本事件当作新的业务授权。` });
+    } catch (error) { this.busy.delete(loopId); throw error; }
+  }
+  startLoopConversation({ loopId, text, config, controller }) {
+    this.emit('event', { event: 'agent_start', loopId });
+    const timeout = setTimeout(() => controller.abort(new Error('conversation_deadline')), 15 * 60_000);
+    const job = converse({ engine: this.engine, loopId, text, config, signal: controller.signal, recordModelTrace: trace => this.recordModelTrace(loopId, trace), emit: event => this.emit('event', event) })
+      .catch(async error => { await this.engine.call('message', { loopId, role: 'error', text: this.conversationError(error, controller) }); })
+      .finally(() => {
+        clearTimeout(timeout);
+        if (controller.signal.aborted) this.failureReviews.cancel(loopId);
+        this.busy.delete(loopId); this.loopJobs.delete(loopId);
+        this.emit('event', { event: 'agent_done', loopId });
+        this.failureReviews.drain();
+      });
+    this.loopJobs.set(loopId, job);
+    job.catch(() => {});
   }
   recordModelTrace(loopId, trace) {
     const directory = path.join(this.options.dataDirectory, 'diagnostics');
@@ -158,23 +194,16 @@ export class Host extends EventEmitter {
           return { accepted: false, reason: 'missing_credentials', loopId: params.loopId };
         }
       } catch (error) { this.busy.delete(params.loopId); throw error; }
-      this.emit('event', { event: 'agent_start', loopId: params.loopId });
-      const timeout = setTimeout(() => controller.abort(new Error('conversation_deadline')), 15 * 60_000);
-      const job = converse({ engine: this.engine, loopId: params.loopId, text: params.text.trim(), config, signal: controller.signal, recordModelTrace: trace => this.recordModelTrace(params.loopId, trace), emit: (event) => this.emit('event', event) })
-        .catch(async (error) => {
-          const safe = this.conversationError(error, controller);
-          await this.engine.call('message', { loopId: params.loopId, role: 'error', text: safe });
-        }).finally(() => { clearTimeout(timeout); this.busy.delete(params.loopId); this.loopJobs.delete(params.loopId); this.emit('event', { event: 'agent_done', loopId: params.loopId }); });
-      this.loopJobs.set(params.loopId, job);
-      job.catch(() => {});
+      this.startLoopConversation({ loopId: params.loopId, text: params.text.trim(), config, controller });
       return { accepted: true, loopId: params.loopId };
     }
-    if (method === 'cancel_chat') { this.busy.get(params.loopId)?.abort(); return true; }
+    if (method === 'cancel_chat') { this.failureReviews.cancel(params.loopId); this.busy.get(params.loopId)?.abort(); return true; }
     if (!allowed.has(method)) throw new Error('不支持的客户端操作。');
     return this.engine.call(method, method === 'new' ? { agentId: params.agentId } : params);
   }
   async close() {
     this.closing = true;
+    this.failureReviews.close();
     for (const controller of this.busy.values()) controller.abort();
     await Promise.allSettled([this.resumeJob, this.connectorDescriptions.close()]);
     await Promise.allSettled([...this.automationJobs.values(), ...this.loopJobs.values()]);
