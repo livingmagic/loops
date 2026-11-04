@@ -6,7 +6,6 @@ import path from 'node:path';
 import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
 import { Engine } from '../host/engine.mjs';
 import { converse } from '../host/agent.mjs';
-import { readConfig, publicConfig } from '../host/config.mjs';
 
 test('Pi tool calling constructs, corrects and saves a versioned flow through the real service (provider test double)', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'loops-agent-test-'));
@@ -31,6 +30,13 @@ test('Pi tool calling constructs, corrects and saves a versioned flow through th
     await converse({ engine, loopId: loop.id, text: '搭建研发流程并保存', config: { model: 'deepseek-flash', key: 'test-only-not-a-key' }, emit() {}, streamFn });
     const saved = (await engine.call('list')).find((item) => item.id === loop.id);
     assert.equal(saved.savedRevision, 1);
+    const process = saved.messages.find(m => m.role === 'process');
+    assert.equal(process.process.status, 'success');
+    assert(process.process.durationMs >= 0);
+    assert.deepEqual(process.process.events.filter(e => e.type === 'tool').map(e => e.status), ['success','success','success']);
+    assert.equal(saved.messages.at(-1).text, '已保存流程。');
+    assert.equal(saved.messages.filter(m => m.role === 'assistant').length, 1);
+    assert(!JSON.stringify(process).includes('test-only-not-a-key'));
     assert.equal(saved.definition.title, '资料整理');
     assert.deepEqual(saved.definition.finalOutputs, ['${steps.report.outputs.report}']);
     assert.match(await fs.readFile(path.join(saved.versions[0].path, 'workflow.py'), 'utf8'), /run_workflow/);
@@ -44,28 +50,16 @@ test('Pi tool calling constructs, corrects and saves a versioned flow through th
   } finally { await engine.close(); await fs.rm(directory, { recursive: true, force: true }); }
 });
 
-test('credential configuration never exposes the key in public settings', async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'loops-config-test-'));
-  try {
-    await fs.writeFile(path.join(directory, '.env.local'), 'DEEPSEEK_API_KEY="fake-secret-for-test"\nDEEPSEEK_MODEL=deepseek-flash\n');
-    const config = readConfig(directory), exposed = publicConfig(config);
-    assert.equal(exposed.configured, true);
-    assert.equal(JSON.stringify(exposed).includes('fake-secret-for-test'), false);
-  } finally { await fs.rm(directory, { recursive: true, force: true }); }
-});
-
-test('development can read project-root configuration and retains explicit local precedence', async () => {
-  const project = await fs.mkdtemp(path.join(os.tmpdir(), 'loops-project-config-'));
-  const desktop = path.join(project, 'desktop');
-  try {
-    await fs.mkdir(desktop);
-    await fs.writeFile(path.join(project, '.env.local'), 'DEEPSEEK_API_KEY=root-test-key\n');
-    const fromRoot = readConfig(desktop, project);
-    assert.equal(fromRoot.key, 'root-test-key');
-    assert.equal(fromRoot.configPath, path.join(project, '.env.local'));
-    assert.equal(publicConfig(fromRoot).configured, true);
-    await fs.writeFile(path.join(desktop, '.env.local'), 'DEEPSEEK_API_KEY=desktop-test-key\n');
-    assert.equal(readConfig(desktop, project).key, 'desktop-test-key');
-    assert.equal(readConfig(desktop).configPath, path.join(desktop, '.env.local'));
-  } finally { await fs.rm(project, { recursive: true, force: true }); }
+test('run result waits for completion and can be cancelled (service test double)', async () => {
+  const { builderTools } = await import('../host/agent.mjs');
+  let calls = 0;
+  const engine = { call: async () => [{ id: 'loop', runs: [{ id: 'run', status: ++calls === 1 ? 'running' : 'success' }] }] };
+  const tool = builderTools(engine, 'loop').find(tool => tool.name === 'get_run_result');
+  assert.equal((await tool.execute('wait', {})).details.status, 'success');
+  assert.equal(calls, 2);
+  const controller = new AbortController();
+  const pending = builderTools({ call: async () => [{ id: 'loop', runs: [{ status: 'running' }] }] }, 'loop', controller.signal)
+    .find(tool => tool.name === 'get_run_result').execute('cancel', {});
+  controller.abort();
+  await assert.rejects(pending, { name: 'AbortError' });
 });

@@ -1,3 +1,5 @@
+import { modelHarnessOptions, closeModelHarness } from './model-harness.mjs';
+const modelOptions = await modelHarnessOptions();
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import assert from 'node:assert/strict';
@@ -6,7 +8,7 @@ const desktop = path.resolve(new URL('..', import.meta.url).pathname);
 const root = path.resolve(process.env.LOOPS_CHAT_QA_DIR || path.join(desktop, '.local/automation-chat-' + Date.now()));
 const qa = path.join(desktop, 'qa/artifacts/live-automation-chat');
 await fs.mkdir(root, { recursive: true }); await fs.mkdir(qa, { recursive: true });
-const options = { dataDirectory: root, workspaceRoot: path.join(root, 'workspaces'), configDirectory: desktop, fallbackConfigDirectory: path.dirname(desktop) };
+const options = { ...modelOptions, dataDirectory: root, workspaceRoot: path.join(root, 'workspaces'), configDirectory: desktop, fallbackConfigDirectory: path.dirname(desktop) };
 let host = new Host(options);
 const evidence = { dataDirectory: root, at: new Date().toISOString(), model: 'real Pi + DeepSeek, no model double', loopDefinitions: 'hand-authored Python fixtures', turns: [] };
 function definition(title, suffix = '') {
@@ -77,4 +79,4 @@ try {
   console.log('PASS multi-turn clarification, persistent draft, adjustment, save, real execution, delivery, restart and continued conversation');
 } catch (error) {
   evidence.error = error.message; evidence.taskId = taskId; await fs.writeFile(path.join(qa, 'live-chat-results.json'), JSON.stringify(evidence, null, 2)); console.error(error.message); process.exitCode = 1;
-} finally { await host.close(); }
+} finally { await host.close(); closeModelHarness(); }

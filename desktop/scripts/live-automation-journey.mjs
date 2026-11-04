@@ -1,3 +1,5 @@
+import { modelHarnessOptions, closeModelHarness } from './model-harness.mjs';
+const modelOptions = await modelHarnessOptions();
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import http from 'node:http';
@@ -9,7 +11,7 @@ const root = path.resolve(process.env.LOOPS_AUTOMATION_QA_DIR || path.join(deskt
 const evidence = path.join(desktop, 'qa/artifacts/live-automation');
 await fs.mkdir(root, { recursive: true }); await fs.mkdir(evidence, { recursive: true });
 let host;
-const options = { dataDirectory: root, workspaceRoot: path.join(root, 'workspaces'), configDirectory: desktop, fallbackConfigDirectory: path.dirname(desktop) };
+const options = { ...modelOptions, dataDirectory: root, workspaceRoot: path.join(root, 'workspaces'), configDirectory: desktop, fallbackConfigDirectory: path.dirname(desktop) };
 function open() { host = new Host(options); }
 async function waitFor(check, timeout = 15000) {
   return new Promise((resolve, reject) => {
@@ -116,4 +118,4 @@ try {
   results.endedAt = new Date().toISOString(); await fs.writeFile(path.join(evidence, 'live-results.json'), JSON.stringify(results, null, 2));
 } catch (error) {
   results.error = error.message; await fs.writeFile(path.join(evidence, 'live-results.json'), JSON.stringify(results, null, 2)); console.error(error.message); process.exitCode = 1;
-} finally { if (receiver) await new Promise(resolve => receiver.close(resolve)); if (host) await host.close(); }
+} finally { if (receiver) await new Promise(resolve => receiver.close(resolve)); if (host) await host.close(); closeModelHarness(); }

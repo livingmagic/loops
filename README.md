@@ -25,20 +25,19 @@ cd loops/runtime
 sh setup.sh
 cd ../desktop
 npm ci
-cp .env.example .env.local
 ```
 
-在 `desktop/.env.local` 中填写自己的 `DEEPSEEK_API_KEY`，按实际账号可用模型设置 `DEEPSEEK_MODEL`，然后在 `desktop/` 启动：
+在 `desktop/` 启动客户端：
 
 ```sh
 npm run dev
 ```
 
-DeepSeek 对话需要自己的服务额度。使用 Codex 步骤还需提前完成本机 Codex 登录及相应服务授权，两者独立；仅运行 Python 的流程不需要 Codex 步骤。不要把密钥输入对话或提交到仓库。
+打开“设置 → 模型”，添加模型并填写服务商密钥，再选择默认模型。同一服务商的模型共用密钥，自定义兼容服务按 API 地址区分。密钥由 macOS 安全存储加密，仅保存在本机。模型对话需要自己的服务额度。使用 Codex 步骤还需提前完成本机 Codex 登录及相应服务授权，两者独立；仅运行 Python 的流程不需要 Codex 步骤。不要把密钥输入对话或提交到仓库。
 
 第一次可以输入：“创建一个文本处理流程，每次读取我提供的文本文件，转成大写并输出新文件，用 Python 执行。”准备一份不含敏感信息的文本，按界面提示搭建和试跑，检查输出后再保存。该示例会调用真实 DeepSeek，不保证每次生成完全相同的流程。
 
-若提示本地执行环境未安装，检查 `runtime/setup.sh` 是否成功；若模型未连接，在设置页查看实际配置路径。进一步说明见 [客户端文档](desktop/README.md)。
+若提示本地执行环境未安装，检查 `runtime/setup.sh` 是否成功；若模型未连接，在“设置 → 模型”检查服务商密钥。进一步说明见 [客户端文档](desktop/README.md)。
 
 安装脚本默认从官方 PyPI 安装锁定依赖，避免本机镜像缺少 Codex SDK；如需使用组织内完整镜像，可在安装时设置 `LOOPS_PIP_INDEX_URL`。
 

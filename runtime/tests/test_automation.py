@@ -4,6 +4,8 @@ import json
 import os
 import tempfile
 import unittest
+import weakref
+from unittest.mock import AsyncMock, patch
 from pathlib import Path
 from loops_runtime.bridge import Service
 from test_workflow import flow
@@ -57,7 +59,7 @@ class AutomationTests(unittest.IsolatedAsyncioTestCase):
             while True:
                 await asyncio.sleep(.01)
                 runs = self.a.runs(task_id)
-                if runs and all(r['status'] in {'success','failed','unknown','sample','stopped','interrupted'} for r in runs) and task_id not in self.a.jobs and (listener or task_id not in self.a.sources): return runs
+                if runs and all(r['status'] in {'success','failed','unknown','sample','stopped','interrupted','authorization_required'} for r in runs) and task_id not in self.a.jobs and (listener or task_id not in self.a.sources): return runs
         return await asyncio.wait_for(wait(), 12)
 
     async def manual(self, task):
@@ -76,6 +78,94 @@ class AutomationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(Path(result['nodes']['delivery']['receipt']['target']).read_text(),'REAL PIPELINE INPUT')
         self.assertEqual(self.a.task(task['id'])['checkpoint'],{'offset':1})
         self.assertEqual([len(self.service.store.get(l['id'])['runs']) for l in self.loops],[1,1])
+
+    async def test_authorization_retry_requires_reconnection_and_keeps_completed_loops(self):
+        from loops_runtime.connectors import AuthorizationRequired
+        broker = self.service.connectors
+        broker.save({'id': 'target', 'name': 'Target', 'type': 'cli', 'command': ['unused'],
+                     'auth': {'mode': 'none'}, 'operations': [
+                         {'name': 'deliver', 'effect': 'write', 'args': ['deliver']}]})
+        broker.entry('target').update(enabled=True, status='connected')
+        spec = copy.deepcopy(self.spec)
+        spec['connectors'] = [{'id': 'target', 'operations': ['deliver']}]
+        spec['outputs'][0]['script'] = SINK.replace('def run(ctx):\n',
+            'def run(ctx):\n    ctx.connector("target", "deliver", {})\n')
+        task = await self.save(spec)
+        with patch.object(broker, 'call', AsyncMock(side_effect=AuthorizationRequired('Expired'))):
+            failed = await self.manual(task)
+        self.assertEqual(failed['status'], 'authorization_required')
+        completed = {key: failed['nodes'][key]['runId'] for key in ('first', 'second')}
+        broker.entry('target')['enabled'] = False
+        with self.assertRaisesRegex(ValueError, '先核对'):
+            self.a.retry(task['id'], failed['id'])
+        with self.assertRaisesRegex(ValueError, '先重新连接'):
+            self.a.retry(task['id'], failed['id'], confirm=True)
+        broker.entry('target')['enabled'] = True
+        self.assertEqual(self.a.run(failed['id'])['status'], 'authorization_required')
+        with patch.object(broker, 'call', AsyncMock(return_value={'payload': {}})) as call:
+            await self.service.handle('automation_retry', {'taskId': task['id'], 'runId': failed['id'], 'confirm': True})
+            await self.settle(task['id'])
+            call.assert_awaited_once()
+        result = self.a.run(failed['id'])
+        self.assertEqual(result['status'], 'success', result)
+        self.assertEqual({key: result['nodes'][key]['runId'] for key in completed}, completed)
+        self.assertEqual([len(self.service.store.get(l['id'])['runs']) for l in self.loops], [1, 1])
+        self.assertNotIn('blockedConnector', self.a.task(task['id']))
+
+    async def test_service_input_releases_responses_but_keeps_call_audit(self):
+        live = weakref.WeakValueDictionary()
+        retained = []
+        class Response(dict):
+            def __init__(self, value):
+                super().__init__(value)
+                live[id(self)] = self
+
+            def __deepcopy__(self, memo):
+                return Response(copy.deepcopy(dict(self), memo))
+
+        async def read(*args, **kwargs):
+            retained.append(len(live))
+            return Response({'payload': {'body': 'x' * 10000}})
+
+        source = {'lifecycle': 'service', 'script':
+                  'def run(ctx):\n    for i in range(40):\n        ctx.connector("feed", "read", {})\n'}
+        version = {'spec': {'policy': {'scriptTimeout': 5},
+                           'connectors': [{'id': 'feed', 'operations': ['read']}]},
+                   'connectorContracts': {'feed': {'read': {'effect': 'read'}}}}
+        task = self.a.new_conversation()
+        with patch.object(self.service.connectors, 'call', read):
+            await self.a.script(task['id'], source, 'input', version=version)
+        self.assertEqual(len(retained), 40)
+        self.assertLessEqual(max(retained), 2, 'Historical input responses must not accumulate')
+        self.assertEqual(len(live), 0)
+        audits = list((self.a.store.root / 'automations' / task['id']).rglob('connector-calls.jsonl'))
+        records = [json.loads(line) for line in audits[0].read_text().splitlines()]
+        self.assertEqual(len(records), 40)
+        self.assertTrue(all(item['status'] == 'returned' for item in records))
+
+    async def test_document_output_still_verifies_host_readback_snapshot(self):
+        broker = self.service.connectors
+        broker.save({'id': 'target', 'name': 'Target', 'type': 'cli', 'command': ['unused'],
+                     'auth': {'mode': 'none'}, 'operations': [
+                         {'name': 'read', 'effect': 'read', 'args': ['read']}]})
+        broker.entry('target').update(enabled=True, status='connected')
+        spec = copy.deepcopy(self.spec)
+        spec['connectors'] = [{'id': 'target', 'operations': ['read']}]
+        spec['outputs'][0].update(
+            verification={'kind': 'document', 'input': 'report', 'expectedFormat': 'text', 'titlePolicy': 'preserve'},
+            script='''def run(ctx):
+    response = ctx.connector('target', 'read', {})
+    ctx.deliver_document('report', content=response['payload']['body'],
+                         target='https://example.invalid/report', actual_format='text')
+''')
+        task = await self.save(spec)
+        for body, matches in [('REAL PIPELINE INPUT', True), ('different body', False)]:
+            with self.subTest(matches=matches), patch.object(broker, 'call', AsyncMock(return_value={'payload': {'body': body}})):
+                result = await self.manual(task)
+                node = result['nodes']['delivery']
+                self.assertEqual(node['verification']['matched'], matches)
+                self.assertEqual(result['status'], 'success' if matches else 'unknown')
+                self.assertEqual(bool(node.get('receipt')), matches)
 
     async def test_input_provenance_survives_replay_and_legacy_times_are_not_invented(self):
         task = await self.save()

@@ -1,14 +1,14 @@
+import { modelHarnessOptions, closeModelHarness } from './model-harness.mjs';
+const modelOptions = await modelHarnessOptions();
 // Real Pi/DeepSeek and local execution; this harness never supplies assistant replies.
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { Host } from '../host/service.mjs';
-import { readConfig } from '../host/config.mjs';
 const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const kind = process.argv[2] || 'sales';
 if (!['sales', 'engineering'].includes(kind)) throw new Error('Unknown journey');
-const options = { dataDirectory: path.join(desktop, '.local/generic-acceptance-20261030'), configDirectory: path.resolve(desktop, '..') };
-if (!readConfig(options.configDirectory).key) throw new Error('DeepSeek 尚未配置。');
+const options = { ...modelOptions, dataDirectory: path.join(desktop, '.local/generic-acceptance-20261030'), configDirectory: path.resolve(desktop, '..') };
 await fs.mkdir(options.dataDirectory, { recursive: true });
 const reportPath = path.join(options.dataDirectory, `${kind}-journey.json`);
 let state;
@@ -88,4 +88,4 @@ try {
     state.correctedRevision = verifiedRevision; state.savedRevision = saved.savedRevision; state.firstRunUnchanged = true; await persist();
   }
   console.log(JSON.stringify({ kind, loopId: state.loopId, built: state.builtRevision, corrected: state.correctedRevision, saved: state.savedRevision, runs: state.runs.map((run) => ({ id: run.id, status: run.status })) }));
-} finally { await host.close(); }
+} finally { await host.close(); closeModelHarness(); }

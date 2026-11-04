@@ -4,6 +4,7 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from .agent_clients import validate_agent_id, validate_model, initial_agent_id
 from .definition import IDENTIFIER, validate, write_bundle
 
 
@@ -40,9 +41,21 @@ class Store:
     def recover(self):
         for loop in self.list():
             changed = False
+            for message in loop.get('messages', []):
+                process = message.get('process')
+                if process and process.get('status') == 'running':
+                    process.update(status='interrupted', endedAt=now())
+                    process['durationMs'] = max(0, int((datetime.fromisoformat(process['endedAt']) - datetime.fromisoformat(process['startedAt'])).total_seconds() * 1000))
+                    for event in process.get('events', []):
+                        if event.get('status') == 'running':
+                            event['status'] = 'interrupted'
+                    changed = True
             for run in loop["runs"]:
                 if run["status"] in ACTIVE:
                     run.update(status="interrupted", endedAt=now(), reason="执行服务已重启，本次运行已中断；记录保留，可重新试跑。")
+                    for call in run.get('commandCalls', []):
+                        if call.get('status') == 'started':
+                            call.update(status='interrupted', outcome='unknown', endedAt=now())
                     changed = True
             if changed:
                 self.put(loop)
@@ -84,7 +97,9 @@ class Store:
         self.db.commit()
         return loop
 
-    def new(self, workspace=None):
+    def new(self, workspace=None, agent_id=None):
+        agent_id = initial_agent_id() if agent_id is None else agent_id
+        validate_agent_id(agent_id)
         loop_id = uid("loop")
         workdir = Path(workspace).expanduser().resolve() if workspace else self.workspace_root / loop_id
         if any(Path(item["workdir"]) == workdir for item in self.list() + self.list(deleted=True)):
@@ -92,7 +107,7 @@ class Store:
         workdir.mkdir(parents=True, exist_ok=True)
         return self.put({"id": loop_id, "title": "新建 Loop", "workdir": str(workdir), "revision": 0,
                          "savedRevision": None, "definition": None, "versions": [], "messages": [], "runs": [],
-                         "config": {"resources": [], "inputDefaults": {}}, "createdAt": now()})
+                         "config": {"resources": [], "inputDefaults": {}, "defaultAgentId": agent_id}, "createdAt": now()})
 
     def configure(self, loop_id, values):
         loop = self.get(loop_id)
@@ -113,7 +128,18 @@ class Store:
             ids.add(key)
         if sum(item["kind"] == "git" for item in resources) > 1:
             raise ValueError("当前每个 Loop 支持一个独立 Git 工作区。")
-        configuration = {"resources": resources, "inputDefaults": copy.deepcopy(values.get("inputDefaults", {}))}
+        configuration = {"resources": resources, "inputDefaults": copy.deepcopy(values.get("inputDefaults", {})),
+                         "defaultAgentId": validate_agent_id(values.get("defaultAgentId", loop["config"].get("defaultAgentId", "codex")))}
+        models = values.get('agentModels', loop['config'].get('agentModels', {}))
+        if not isinstance(models, dict):
+            raise ValueError('Agent 模型配置必须为对象。')
+        if models:
+            configuration['agentModels'] = {validate_agent_id(k): validate_model(v) for k, v in models.items()}
+        efforts = values.get('agentReasoning', loop['config'].get('agentReasoning', {}))
+        if not isinstance(efforts, dict):
+            raise ValueError('Agent 思考强度配置必须为对象。')
+        if efforts:
+            configuration['agentReasoning'] = {validate_agent_id(k): validate_model(v) for k, v in efforts.items()}
         if configuration == loop["config"]:
             return loop
         if loop["definition"]:
@@ -153,6 +179,12 @@ class Store:
     def message(self, loop_id, role, text, **extra):
         loop = self.get(loop_id)
         loop["messages"].append({"id": uid("message"), "role": role, "text": text, "createdAt": now(), **extra})
+        return self.put(loop)
+
+    def update_message(self, loop_id, message_id, process):
+        loop = self.get(loop_id)
+        message = next(m for m in loop['messages'] if m['id'] == message_id and m['role'] == 'process')
+        message['process'] = process
         return self.put(loop)
 
     def session(self, loop_id, messages=None):

@@ -45,6 +45,7 @@ htmlcov/
 
 # Local exploratory checks, reports, screenshots and scratch files.
 qa/
+.playwright-cli/
 
 # Unused design concepts and temporary exports.
 **/design/**/drafts/

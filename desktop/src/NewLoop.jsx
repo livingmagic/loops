@@ -10,7 +10,7 @@ export function NewLoop({ input, text, onChange, onSubmit, pending, configured, 
     </section>
     <div className="new-loop-input-area">
       {error && <div className="service-error" role="alert"><span>{error}</span><button type="button" aria-label="关闭提示" onClick={onDismissError}><X size={17} /></button></div>}
-      <Composer input={input} text={text} onChange={onChange} onSubmit={onSubmit} pending={pending} placeholder={placeholder} pendingLabel={pendingLabel} className="new-loop-composer" note={configured === false ? 'DeepSeek 尚未配置，需求可以先保留。' : undefined} />
+      <Composer input={input} text={text} onChange={onChange} onSubmit={onSubmit} pending={pending} placeholder={placeholder} pendingLabel={pendingLabel} className="new-loop-composer" note={configured === false ? '模型尚未配置，需求可以先保留。' : undefined} />
     </div>
   </main>;
 }

@@ -1,0 +1,15 @@
+{
+  "apiVersion": 1,
+  "id": "mimo",
+  "name": "MiMo",
+  "version": "1.0.0",
+  "command": "mimo",
+  "paths": [
+    ".mimocode/bin/mimo",
+    ".local/bin/mimo"
+  ],
+  "modes": [
+    "read-only",
+    "write"
+  ]
+}
