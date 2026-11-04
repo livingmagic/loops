@@ -128,6 +128,33 @@ class AgentWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.clients.calls[0][0], 'mimo')
 
 
+class StepSelectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_atomic_agent_model_reasoning_change_and_validation(self):
+        with tempfile.TemporaryDirectory() as root:
+            service = Service(root, lambda e: None, workspace_root=Path(root)/'workspaces')
+            loop = service.store.new()
+            initial = definition()
+            initial['steps'][0]['execution'].update(agentId='codex', model='old-model', reasoning='high')
+            service.store.update_definition(loop['id'], initial)
+            state = {'id': 'mimo', 'name': 'MiMo', 'ready': True, 'modes': ['read-only', 'write'],
+                     'models': [{'id': 'new-model', 'reasoningLevels': ['low', 'high']}]}
+            with patch.object(service.agent_clients, 'configured_probe', AsyncMock(return_value=state)):
+                changed = await service.handle('agent_selection', {'loopId': loop['id'], 'stepId': 'analyze',
+                    'agentId': 'mimo', 'model': 'new-model', 'reasoning': 'low'})
+                execution = changed['definition']['steps'][0]['execution']
+                self.assertEqual((execution['agentId'], execution['model'], execution['reasoning']), ('mimo', 'new-model', 'low'))
+                self.assertEqual(changed['definition']['steps'][1:], initial['steps'][1:])
+                revision = changed['revision']
+                with self.assertRaises(ValueError):
+                    await service.handle('agent_selection', {'loopId': loop['id'], 'stepId': 'analyze',
+                        'agentId': 'mimo', 'model': 'old-model', 'reasoning': 'high'})
+                self.assertEqual(service.store.get(loop['id'])['revision'], revision)
+            cleared = await service.handle('agent_selection', {'loopId': loop['id'], 'stepId': 'analyze', 'agentId': 'codex'})
+            self.assertNotIn('model', cleared['definition']['steps'][0]['execution'])
+            self.assertNotIn('reasoning', cleared['definition']['steps'][0]['execution'])
+            await service.handle('shutdown', {})
+
+
 class ClientProtocolTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()

@@ -6,7 +6,7 @@ from pathlib import Path
 from .store import Store
 from .runner import Runner
 from .fixture import create_fixture
-from .agent_clients import AgentClients, validate_agent_id, validate_model, PLUGIN_ERRORS
+from .agent_clients import AgentClients, validate_agent_id, validate_model, step_agent, resolve_selection, PLUGIN_ERRORS
 from .commands import read_commands
 from .workflow import resources
 from .automation import Automations
@@ -66,6 +66,19 @@ class Service:
                 step = next((s for s in (definition or {}).get('steps', []) if s['id'] == params['stepId']), None)
                 if not step or step['execution']['tool'] not in {'agent', 'codex'}:
                     raise ValueError('只能为智能步骤选择执行 Agent。')
+                if agent_id and agent_id != step_agent(step['execution'], loop['config']):
+                    step['execution'].pop('model', None)
+                    step['execution'].pop('reasoning', None)
+                if 'model' in params or 'reasoning' in params:
+                    state = await self.agent_clients.configured_probe(agent_id)
+                    if not state.get('ready') or step['execution'].get('mode', 'write') not in state.get('modes', []):
+                        raise ValueError('所选 Agent 当前不可用或不支持此节点的执行权限。')
+                    selection = {'model': validate_model(params.get('model')), 'reasoning': validate_model(params.get('reasoning'))}
+                    resolve_selection(state, selection)
+                    for field, selected in selection.items():
+                        step['execution'].pop(field, None)
+                        if selected is not None:
+                            step['execution'][field] = selected
                 step['execution']['tool'] = 'agent'
                 step['execution'].pop('agentId', None)
                 if agent_id is not None:

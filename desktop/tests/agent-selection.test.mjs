@@ -39,3 +39,16 @@ test('first chat persists execution client independently of builder model; step 
     await assert.rejects(host.action('new', { agentId: 'unregistered' }), /请选择/);
   } finally { await host.close(); await fs.rm(directory, { recursive: true, force: true }); }
 });
+
+test('node model display resolves legacy, inherited and explicit settings like the runtime', async () => {
+  const { stepSelection } = await import('../src/agent-selection.mjs');
+  const clients = [{ id:'codex', defaultModel:'a', defaultReasoning:'high', models:[{id:'a',reasoningLevels:['low','high']},{id:'b',reasoningLevels:['low','medium'],defaultReasoning:'medium'}] }, {id:'mimo',defaultModel:'m',defaultReasoning:'low',models:[{id:'m',reasoningLevels:['low','high']}]}];
+  let selection = stepSelection({tool:'agent'}, {defaultAgentId:'codex'}, clients);
+  assert.equal(selection.model,'a'); assert.equal(selection.reasoning,'high');
+  selection = stepSelection({tool:'agent',model:'b'}, {defaultAgentId:'codex'}, clients);
+  assert.equal(selection.reasoning,'medium');
+  selection = stepSelection({tool:'agent',reasoning:'low'}, {defaultAgentId:'codex',agentModels:{codex:'b'},agentReasoning:{codex:'medium'}}, clients);
+  assert.equal(selection.model,'b'); assert.equal(selection.reasoning,'low');
+  assert.equal(stepSelection({tool:'codex'}, {defaultAgentId:'mimo'}, clients).agentId,'codex');
+  assert.equal(stepSelection({tool:'agent',agentId:'mimo'}, {defaultAgentId:'codex'}, clients).model,'m');
+});

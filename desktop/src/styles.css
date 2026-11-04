@@ -915,3 +915,9 @@ h1 { margin: 0; font-size: 23px; line-height: 1.35; font-weight: 700; letter-spa
 .agent-settings-fields select:focus-visible { outline:2px solid #4679ee; outline-offset:2px; }
 .agent-settings-fields select:disabled { color:#8a97aa; background:#f7f9fc; }
 .agent-settings-card .form-error { margin:12px 0 0; }
+
+.step-agent-settings { display:grid; gap:12px; margin-bottom:14px; }
+.step-agent-settings > label, .step-agent-settings .agent-picker { display:flex; flex-direction:column; align-items:stretch; gap:6px; margin:0; color:#6b788a; font-size:12px; min-width:0; }
+.step-agent-settings select { width:100%; min-width:0; max-width:none; height:36px; padding:0 9px; border:1px solid #d9e1ed; border-radius:8px; background:white; color:#17243c; font:inherit; font-size:13px; }
+.step-agent-settings select:focus-visible { outline:2px solid #4679ee; outline-offset:2px; }
+.step-agent-settings select:disabled { color:#8a97aa; background:#f7f9fc; }
