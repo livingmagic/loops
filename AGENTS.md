@@ -12,6 +12,8 @@ Avoid unnecessary secondary labels and descriptions. Let the layout do the expla
 
 ## 文件与版本管理
 
+- 发布改动前先获取最新远程 `main`，以它为基线只提交本次差异；检查完整 PR diff，避免用旧本机源码快照覆盖远程已合并的配置和依赖升级。
+
 - `qa/` 是本机临时目录，整体忽略，不提交；可直接存放探索脚本、人工验收、截图和日志，无需定期整理、归档或维护报告。
 - 长期维护的自动测试放在 `tests/`，开发、构建和发布工具放在 `scripts/`。临时检查只有需要持续防止问题复发时，才整理为正式测试。
 - `design/` 默认保留采用的设计源稿与参考图；未采用方案放入 `drafts/`，临时导出放入 `exports/`。应用运行和构建所需的正式图片、图标继续保存在 `public/`、`assets/` 并提交。
