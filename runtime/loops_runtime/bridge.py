@@ -186,6 +186,13 @@ class Service:
             value = self.store.message(loop_id, params["role"], params["text"], **params.get("extra", {}))
         elif method == "message_update":
             value = self.store.update_message(loop_id, params["messageId"], params["process"])
+        elif method == "claim_failure_review":
+            loop = self.store.get(loop_id)
+            run = loop["runs"][-1] if loop["runs"] else None
+            if not run or run["id"] != params["runId"] or run["status"] != "failed" or run.get("failureReview"):
+                return False
+            self.store.update_run(loop_id, run["id"], failureReview={"status": "claimed"})
+            return True
         elif method == "session_get":
             return self.store.session(loop_id)
         elif method == "session_set":

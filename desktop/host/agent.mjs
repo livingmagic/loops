@@ -59,7 +59,10 @@ export function builderTools(engine, loopId, signal) {
       while (true) {
         const loop = (await engine.call('list')).find((item) => item.id === loopId);
         const run = loop.runs.at(-1);
-        if (!run || run.status !== 'running' || Date.now() >= deadline) return run || { status: '尚未试跑' };
+        if (!run || !['queued', 'preparing', 'running', 'correcting'].includes(run.status) || Date.now() >= deadline) {
+          if (run?.status === 'failed') await engine.call('claim_failure_review', { loopId, runId: run.id });
+          return run || { status: '尚未试跑' };
+        }
         await delay(1000, undefined, { signal });
       }
     }),
