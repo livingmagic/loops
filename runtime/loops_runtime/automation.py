@@ -13,8 +13,15 @@ from pathlib import Path
 
 from .definition import IDENTIFIER, declared_outputs, validate
 from .store import ACTIVE, now, uid
+from .connectors import AuthorizationRequired
 
-TERMINAL = {"success", "failed", "unknown", "stopped", "interrupted"}
+TERMINAL = {"success", "failed", "unknown", "stopped", "interrupted", "authorization_required"}
+
+
+def document_output_format(output):
+    # These extensions declare a markup language. A .txt container is ambiguous
+    # and may legitimately contain literal text, Markdown or another language.
+    return {'.md': 'markdown', '.markdown': 'markdown', '.html': 'html', '.htm': 'html'}.get(Path(output.get('path', '')).suffix.lower())
 
 
 def output_keys(definition):
@@ -23,8 +30,9 @@ def output_keys(definition):
 
 
 class Automations:
-    def __init__(self, store, runner, notify):
+    def __init__(self, store, runner, notify, connectors=None):
         self.store, self.runner, self.notify = store, runner, notify
+        self.connectors = connectors
         self.db = store.db
         for name in ("automation_tasks", "automation_runs"):
             self.db.execute(f"CREATE TABLE IF NOT EXISTS {name} (id TEXT PRIMARY KEY, data TEXT NOT NULL)")
@@ -43,12 +51,20 @@ class Automations:
                         node["status"] = "unknown"
                 self.put("automation_runs", run)
         for task in self.list(include_deleted=True):
-            task["sourceStatus"] = "stopped"
+            task["sourceStatus"] = "authorization_required" if task.get("blockedConnector") else "stopped"
+            if task.get('connectionWait', {}).get('status') == 'resuming':
+                task['connectionWait']['status'] = 'waiting'
             self.put("automation_tasks", task)
+        for run in self.runs():
+            self.publish_run_feedback(run)
 
     def put(self, table, value):
+        if table == 'automation_runs' and value['status'] not in TERMINAL:
+            value['feedbackSent'] = False
         self.db.execute(f"INSERT INTO {table} VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", (value["id"], json.dumps(value, ensure_ascii=False)))
         self.db.commit()
+        if table == 'automation_runs':
+            self.publish_run_feedback(value)
         return value
 
     def rows(self, table):
@@ -116,9 +132,103 @@ class Automations:
         task = self.task(task_id)
         if role not in {"user", "assistant", "error"} or not isinstance(text, str):
             raise ValueError("对话消息无效。")
+        if role == 'user':
+            task.pop('connectionWait', None)
         task.setdefault("messages", []).append({"id": uid("message"), "role": role, "text": self.redact(text), "createdAt": now()})
         self.put("automation_tasks", task)
         self.changed(task_id)
+        return True
+
+    def report_run_in_conversation(self, task_id, run_id, *, progress=False):
+        run = self.run(run_id)
+        if run['taskId'] != task_id or run['status'] == 'sample':
+            raise ValueError('只能反馈本任务的实际试跑。')
+        if run.get('reportToConversation') and not progress:
+            return
+        task = self.task(task_id)
+        if run['status'] not in TERMINAL:
+            state = {'queued': '排队中', 'waiting': '等待 Loop 空闲', 'running': '正在执行', 'stopping': '正在停止'}.get(run['status'], '处理中')
+            message = f"本次试跑{state}（版本 {run['revision']}），完成或失败后会在这里自动更新结果。" if progress else f"已启动本次试跑（版本 {run['revision']}），完成或失败后会在这里自动更新结果。"
+            task.setdefault('messages', []).append({'id': uid('message'), 'role': 'assistant', 'source': 'execution', 'kind': 'run_progress',
+                'runId': run_id, 'text': message, 'createdAt': now()})
+            self.put('automation_tasks', task)
+        run['reportToConversation'] = True
+        self.put('automation_runs', run)
+        self.changed(task_id)
+
+    def publish_run_feedback(self, run):
+        if not run.get('reportToConversation') or run.get('feedbackSent') or run['status'] not in TERMINAL:
+            return
+        task = self.task(run['taskId'], deleted=True)
+        run['feedbackSent'] = True
+        status = {'success': '已完成', 'failed': '失败', 'unknown': '结果待核对', 'stopped': '已停止',
+                  'interrupted': '已中断', 'authorization_required': '等待重新授权'}[run['status']]
+        text = f"本次试跑{status}（版本 {run['revision']}）。"
+        if run.get('error'):
+            text += '\n\n' + self.redact(run['error'])[:3000]
+        spec = self.version(run['taskId'], run['revision'])['spec']
+        titles = {sink['id']: sink.get('title') or '输出' for sink in spec['outputs']}
+        for node_id, node in run['nodes'].items():
+            receipt = node.get('receipt')
+            if not receipt or receipt.get('status') not in {'accepted', 'delivered'}:
+                continue
+            target = receipt['target']
+            target = 'https:' + target if target.startswith('//') else target
+            parsed = urllib.parse.urlparse(target)
+            label = '已送达' if receipt['status'] == 'delivered' else '目标已接收'
+            text += '\n\n' + titles.get(node_id, '输出') + '：' + label + '。'
+            if parsed.scheme in {'https', 'http'} and parsed.netloc and not parsed.username and not parsed.password:
+                text += f' [查看结果](<{target}>)'
+            else:
+                text += '\n' + target
+        if not task.get('deletedAt'):
+            task.setdefault('messages', []).append({'id': uid('message'), 'role': 'assistant', 'source': 'execution', 'kind': 'run_status',
+                'runId': run['id'], 'status': run['status'], 'text': text, 'createdAt': now()})
+        # Feedback and its delivery marker commit together; restart must not
+        # duplicate the message or replay the external operation.
+        with self.db:
+            self.db.execute('UPDATE automation_runs SET data=? WHERE id=?', (json.dumps(run, ensure_ascii=False), run['id']))
+            self.db.execute('UPDATE automation_tasks SET data=? WHERE id=?', (json.dumps(task, ensure_ascii=False), task['id']))
+        self.changed(task['id'])
+
+    def wait_for_connectors(self, task_id, connector_ids):
+        from .connector_presets import presets
+        task = self.task(task_id)
+        if task['enabled']:
+            raise ValueError('请先暂停任务，再继续搭建。')
+        if not isinstance(connector_ids, list) or not 1 <= len(connector_ids) <= 30 or any(not isinstance(key, str) for key in connector_ids):
+            raise ValueError('请指定需要连接的服务。')
+        known = set(self.connectors.items) | {p['id'] for p in presets()}
+        if any(key not in known for key in connector_ids):
+            raise ValueError('服务尚未添加，请先添加连接器后继续搭建。')
+        ids = list(dict.fromkeys(connector_ids))
+        if self.connectors_ready(ids):
+            return {'waiting': False, 'message': '这些服务已连接，可以继续搭建。'}
+        task['connectionWait'] = {'id': uid('connector_wait'), 'connectorIds': ids, 'status': 'waiting', 'createdAt': now()}
+        self.put('automation_tasks', task)
+        self.changed(task_id)
+        return {'waiting': True, 'message': '已保留需求，所需服务全部连接后自动继续搭建草稿。'}
+
+    def connectors_ready(self, ids):
+        return all(key in self.connectors.items and self.connectors.items[key]['enabled']
+                   and self.connectors.items[key]['status'] == 'connected' for key in ids)
+
+    def claim_connection_resume(self, task_id, wait_id):
+        task = self.task(task_id, deleted=True)
+        wait = task.get('connectionWait')
+        if task.get('deletedAt') or not wait or wait['id'] != wait_id or wait['status'] != 'waiting' or task['enabled'] or not self.connectors_ready(wait['connectorIds']):
+            return None
+        wait['status'] = 'resuming'
+        self.put('automation_tasks', task)
+        self.changed(task_id)
+        return copy.deepcopy(wait)
+
+    def clear_connection_wait(self, task_id, wait_id=None):
+        task = self.task(task_id)
+        if task.get('connectionWait') and (wait_id is None or task['connectionWait']['id'] == wait_id):
+            task.pop('connectionWait')
+            self.put('automation_tasks', task)
+            self.changed(task_id)
         return True
 
     def update_draft(self, task_id, spec):
@@ -126,6 +236,8 @@ class Automations:
         if task["enabled"]:
             raise ValueError("请先暂停自动化任务，再修改流程。")
         normalized, _ = self.check_spec(spec)
+        if task.get('connectionWait', {}).get('status') == 'waiting':
+            task.pop('connectionWait')
         task.update(draftSpec=normalized, draftRevision=task.get("draftRevision", 0) + 1, title=normalized["title"], updatedAt=now())
         self.put("automation_tasks", task)
         self.changed(task_id)
@@ -159,7 +271,7 @@ class Automations:
             return {}
 
     def redact(self, value):
-        text = str(value)
+        text = self.connectors.redact(value) if self.connectors else str(value)
         for connection in self.secrets().values():
             for secret in connection.get("headers", {}).values():
                 if secret:
@@ -176,11 +288,24 @@ class Automations:
         if not title or len(title) > 120:
             raise ValueError("请输入不超过 120 字的任务名称。")
         value["title"] = title
+        grants = value.get("connectors", [])
+        if not isinstance(grants, list) or len(grants) > 30:
+            raise ValueError("连接器授权需要列表，最多 30 项。")
+        seen_connectors = set()
+        for grant in grants:
+            if not isinstance(grant, dict) or not isinstance(grant.get("id"), str) or grant["id"] in seen_connectors or not isinstance(grant.get("operations"), list) or not grant["operations"] or any(not isinstance(o, str) for o in grant["operations"]):
+                raise ValueError("每项连接器授权需要唯一 id 和允许调用的 operations 列表。")
+            if not self.connectors:
+                raise ValueError("连接器服务不可用。")
+            self.connectors.entry(grant["id"])
+            seen_connectors.add(grant["id"])
+        if self.connectors:
+            self.connectors.require_connected([grant['id'] for grant in grants])
         source, nodes, outputs = value.get("source", {}), value.get("nodes", []), value.get("outputs", [])
         if not isinstance(nodes, list) or not 1 <= len(nodes) <= 30 or not isinstance(outputs, list) or len(outputs) > 20:
             raise ValueError("请连接 1 到 30 个 Loop，输出目标最多 20 个。")
-        snapshots, available, ids = {}, {}, set()
-        self.check_script(source, "输入", requires_sample=True)
+        snapshots, available, ids, formats = {}, {}, set(), {}
+        self.check_script(source, "输入", requires_sample=True, grants=grants)
         if source.get("lifecycle", "once") not in {"once", "service"}:
             raise ValueError("请选择单次采集或持续监听。")
         for node in nodes:
@@ -216,6 +341,8 @@ class Automations:
                 if not ref.startswith("input.") and field["kind"] != "file":
                     raise ValueError("Loop 文件产出只能映射到文件输入；请在 Loop 内通过 Python 转换。")
             available.update({f"{key}.{k}": "file" for k in output_keys(definition).values()})
+            declared = declared_outputs(definition)
+            formats.update({f'{key}.{name}': document_output_format(declared[ref]) for ref, name in output_keys(definition).items()})
         for sink in outputs:
             if not isinstance(sink, dict) or not isinstance(sink.get("bindings", {}), dict):
                 raise ValueError("输出节点需要有效配置与输入映射。")
@@ -223,7 +350,29 @@ class Automations:
             if not isinstance(key, str) or not IDENTIFIER.fullmatch(key) or key in ids or key == "input":
                 raise ValueError("输出节点标识必须唯一且有效。")
             ids.add(key)
-            self.check_script(sink, "输出")
+            self.check_script(sink, "输出", grants=grants)
+            verification = sink.get('verification')
+            if verification is not None:
+                if isinstance(verification, dict):
+                    input_name = verification.get('input')
+                    original_format = formats.get(sink.get('bindings', {}).get(input_name)) if isinstance(input_name, str) else None
+                    if original_format:
+                        if verification.get('expectedFormat') is None:
+                            verification['expectedFormat'] = original_format
+                        elif verification['expectedFormat'] != original_format:
+                            raise ValueError(f'已保存的原报告格式为 {original_format}，与 expectedFormat 冲突；请区分原报告格式与目标回读格式。')
+                if (not isinstance(verification, dict) or verification.get('kind') != 'document'
+                    or verification.get('input') not in sink.get('bindings', {})
+                    or verification.get('expectedFormat') not in {'text', 'markdown', 'html'}
+                    or verification.get('titlePolicy') not in {'preserve', 'target'}):
+                    raise ValueError('文档验收规则需要绑定输入、明确格式和有效标题规则。')
+                if verification.get('expectedTitle') is not None and (not isinstance(verification['expectedTitle'], str) or not verification['expectedTitle'].strip()):
+                    raise ValueError('文档目标名称需要非空文本。')
+                if verification['titlePolicy'] == 'target' and not verification.get('expectedTitle'):
+                    raise ValueError('允许替换文档级标题时必须声明用户要求的目标名称。')
+            import ast
+            if any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr in {'verify_document', 'deliver_document'} for n in ast.walk(ast.parse(sink['script']))) and verification is None:
+                raise ValueError('使用文档校验前，请在输出 verification 中声明用户要求的固定验收规则。')
             for ref in sink.get("bindings", {}).values():
                 self.check_ref(ref, available)
         policy = value.setdefault("policy", {})
@@ -242,7 +391,7 @@ class Automations:
             raise ValueError(f"输入映射引用不存在或顺序不正确：{ref}")
 
     @staticmethod
-    def check_script(spec, label, *, requires_sample=False):
+    def check_script(spec, label, *, requires_sample=False, grants=()):
         if not isinstance(spec, dict):
             raise ValueError(f"{label}脚本需要有效配置。")
         source = spec.get("script")
@@ -259,6 +408,34 @@ class Automations:
             raise ValueError(f"{label}脚本需要定义 run(ctx)。")
         if requires_sample and "sample" not in functions:
             raise ValueError("输入脚本需要定义 sample(ctx)，用于立即采集一份真实样本。")
+        context_names = {n.args.args[0].arg for n in tree.body
+                         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                         and n.name in {'run', 'sample'} and n.args.args}
+        import symtable
+        module_symbols = symtable.symtable(source, f'{label}.py', 'exec')
+        for name in context_names & set(module_symbols.get_identifiers()):
+            symbol = module_symbols.lookup(name)
+            if symbol.is_referenced() and not symbol.is_assigned() and not symbol.is_imported():
+                raise ValueError(f'{label}脚本在函数外使用了运行参数 {name}；请将这些配置读取放入 run/sample 函数，执行器不会提供模块全局上下文。')
+        allowed = {g['id']: set(g['operations']) for g in grants}
+        for call in ast.walk(tree):
+            if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                and call.func.attr == 'deliver_document' and isinstance(call.func.value, ast.Name)
+                and call.func.value.id in context_names and (spec.get('verification') or {}).get('expectedTitle')
+                and not any(k.arg in {'actual_title', 'title', 'title_path', None} for k in call.keywords)):
+                raise ValueError('文档输出要求目标名称：请增加实际名称回读并传 actual_title 或 title_path，不能只声明配置中的目标名称。')
+            if (not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute)
+                    or call.func.attr != 'connector' or not isinstance(call.func.value, ast.Name)
+                    or call.func.value.id not in context_names):
+                continue
+            keywords = {k.arg: k.value for k in call.keywords}
+            key = call.args[0] if call.args else keywords.get('connector_id')
+            operation = call.args[1] if len(call.args) > 1 else keywords.get('operation')
+            # Dynamic calls remain subject to the same runtime grant check.
+            # Catch definite literal mismatches before saving or any IO.
+            if all(isinstance(v, ast.Constant) and isinstance(v.value, str) for v in (key, operation)):
+                if operation.value not in allowed.get(key.value, set()):
+                    raise ValueError(f'{label}脚本第 {call.lineno} 行调用 {key.value} / {operation.value}，但 connectors 未声明此操作；请同步修正脚本和固定授权后保存。')
         if not isinstance(spec.get("config", {}), dict):
             raise ValueError("脚本配置需要 JSON 对象。")
 
@@ -272,9 +449,12 @@ class Automations:
         else:
             task = {"id": uid("automation"), "revision": 0, "enabled": False, "sourceStatus": "stopped", "logs": [], "checkpoint": None, "createdAt": now()}
         spec, loops = self.check_spec(spec)
+        task.pop('connectionWait', None)
         task.update(title=spec["title"], revision=task["revision"] + 1, spec=spec, draftSpec=None, updatedAt=now(), sourceStatus="stopped", sourceError="")
         # Version definitions and scripts are immutable, including their saved Loop snapshots.
-        self.db.execute("INSERT INTO automation_versions VALUES (?,?,?)", (task["id"], task["revision"], json.dumps({"spec": spec, "loops": loops}, ensure_ascii=False)))
+        connector_versions = self.connectors.snapshot([g["id"] for g in spec.get("connectors", [])]) if self.connectors else {}
+        connector_contracts = self.connectors.snapshot_contracts(spec.get('connectors', [])) if self.connectors else {}
+        self.db.execute("INSERT INTO automation_versions VALUES (?,?,?)", (task["id"], task["revision"], json.dumps({"spec": spec, "loops": loops, "connectorVersions": connector_versions, 'connectorContracts': connector_contracts}, ensure_ascii=False)))
         self.put("automation_tasks", task)
         self.changed(task["id"])
         return self.detail(task["id"])
@@ -285,7 +465,7 @@ class Automations:
         self.started = True
         self.pump_task = asyncio.create_task(self.pump())
         for task in self.list():
-            if task["enabled"]:
+            if task["enabled"] and not task.get("blockedConnector"):
                 self.start_source(task["id"])
         self.wake.set()
 
@@ -294,7 +474,7 @@ class Automations:
             await self.wake.wait()
             self.wake.clear()
             for task in self.list():
-                if task["id"] in self.jobs:
+                if task["id"] in self.jobs or task.get("blockedConnector"):
                     continue
                 queued = next((r for r in self.runs(task["id"]) if r["status"] == "queued" and (task["enabled"] or r.get("manual"))), None)
                 if queued:
@@ -316,6 +496,11 @@ class Automations:
         task = self.task(task_id)
         if enabled:
             task = self.require_saved(task_id)
+            if task.get("blockedConnector"):
+                connector = self.connectors.entry(task["blockedConnector"])
+                if not connector["enabled"]:
+                    raise ValueError("请先重新连接授权失效的连接器。")
+                task.pop("blockedConnector", None)
             for node in task["spec"]["nodes"]:
                 self.store.get(node["loopId"])
         task.update(enabled=bool(enabled), sourceError="")
@@ -353,6 +538,12 @@ class Automations:
                     break
                 except asyncio.CancelledError:
                     raise
+                except AuthorizationRequired as error:
+                    task = self.task(task_id)
+                    task.update(sourceStatus="authorization_required", sourceError=self.redact(error))
+                    self.put("automation_tasks", task)
+                    self.changed(task_id)
+                    break
                 except Exception as error:
                     task = self.task(task_id)
                     task.update(sourceStatus="error", sourceError=self.redact(error)[:3000])
@@ -377,7 +568,11 @@ class Automations:
                 raise ValueError(f"输入 {key} 需要文本或文件。")
             if item.get("kind") == "file":
                 path = Path(item["path"]).expanduser().resolve()
-                if not path.is_file() or path.stat().st_size > 10_000_000 or any(p.startswith(".env") or p in {".ssh", ".aws", ".codex", "connections.local.json"} for p in path.parts):
+                owned = self.store.root / "automations"
+                # Generated process/run files are scoped to the application's data
+                # root. Its ancestors may be a Codex worktree; they are not credentials.
+                parts = path.relative_to(owned).parts if path.is_relative_to(owned) else path.parts
+                if not path.is_file() or path.stat().st_size > 10_000_000 or any(p.startswith(".env") or p in {".ssh", ".aws", ".codex", "connections.local.json"} for p in parts):
                     raise ValueError("输入需要不超过 10MB 的普通文件，不能使用凭证文件。")
                 raw = path.read_bytes()
                 if len(raw) > 10_000_000:
@@ -494,10 +689,16 @@ class Automations:
 
     def retry(self, task_id, run_id, confirm=False):
         run = self.run(run_id)
-        if run["taskId"] != task_id or run["status"] not in {"failed", "unknown", "interrupted", "stopped"}:
+        if run["taskId"] != task_id or run["status"] not in {"failed", "unknown", "interrupted", "stopped", "authorization_required"}:
             raise ValueError("只能继续本任务失败或中断的运行。")
         if not confirm:
             raise ValueError("请先核对已发生的外部操作，再确认从失败处继续。")
+        task = self.task(task_id)
+        if task.get("blockedConnector"):
+            if not self.connectors.entry(task["blockedConnector"])["enabled"]:
+                raise ValueError("请先重新连接授权失效的连接器。")
+            task.pop("blockedConnector", None)
+            self.put("automation_tasks", task)
         if task_id in self.jobs:
             raise ValueError("任务仍在结束中，请稍后再试。")
         run.update(status="queued", error="", manual=True)
@@ -588,7 +789,10 @@ class Automations:
                 for ref, key in output_keys(result["definition"]).items():
                     step_id, output_id = key.split(".")
                     step = next(s for s in reversed(result["stepResults"]) if s["stepId"] == step_id and s["status"] == "success")
-                    path = Path(step["outputs"][output_id])
+                    output = declared_outputs(result['definition'])[ref]
+                    path = Path(step['outputFiles'][output_id]) if output_id in step.get('outputFiles', {}) else (
+                        Path(result['directory']) / 'results' / step_id / f'{output_id}.json'
+                        if output.get('kind') == 'value' else Path(step['outputs'][output_id]))
                     produced[key] = {"kind": "file", "path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
                 state.update(status="success", outputs=produced, endedAt=now())
                 values.update({f"{current_key}.{k}": v for k, v in produced.items()})
@@ -633,6 +837,11 @@ class Automations:
                 run["nodes"][current_key]["status"] = "unknown" if current_key in {s["id"] for s in spec["outputs"]} else "stopped"
                 run["nodes"][current_key].update(error="进程已停止，请核对外部操作。", endedAt=now())
             run.update(status="interrupted" if self.closing else "stopped", error="运行已停止，请核对已发生的外部操作。", endedAt=now())
+        except AuthorizationRequired as error:
+            run = self.run(run_id)
+            if current_key in run["nodes"]:
+                run["nodes"][current_key].update(status="authorization_required", error=self.redact(error), endedAt=now())
+            run.update(status="authorization_required", error=self.redact(error), endedAt=now())
         except Exception as error:
             run = self.run(run_id)
             uncertain = current_key in {s["id"] for s in spec["outputs"]}
@@ -717,7 +926,8 @@ class Automations:
         script = directory / "script.py"
         script.write_text(script_spec["script"])
         normalized = {k: v["path"] if v["kind"] == "file" else v["value"] for k, v in (inputs or {}).items()}
-        data = {"config": script_spec.get("config", {}), "inputs": normalized, "inputEvidence": inputs or {}, "checkpoint": task.get("checkpoint"), "workspace": str(directory), "delivery_key": f"{run_id}:{node_id}" if run_id else None}
+        data = {"config": script_spec.get("config", {}), "inputs": normalized, "inputEvidence": inputs or {}, "checkpoint": task.get("checkpoint"), "workspace": str(directory), "delivery_key": f"{run_id}:{node_id}" if run_id else None,
+                'verification': script_spec.get('verification')}
         context_file = directory / "context.json"
         context_file.write_text(json.dumps(data, ensure_ascii=False))
         if run_id:
@@ -730,7 +940,8 @@ class Automations:
         interpreter = await self.interpreter(task_id, version)
         process = await asyncio.create_subprocess_exec(interpreter, "-m", "loops_runtime.script_worker", str(context_file), str(script), "sample" if role == "sample" else "run", cwd=directory, env=env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True, limit=2_000_000)
         sample_count, received = 0, None
-        errors = []
+        observed_calls = {}
+        errors, connector_auth_error = [], None
         async def stderr():
             while line := await process.stderr.read(4096):
                 text = line.decode(errors="replace")[-3000:]
@@ -743,7 +954,7 @@ class Automations:
                         handle.write(self.redact(text))
         error_task = asyncio.create_task(stderr())
         async def exchange():
-            nonlocal sample_count, received
+            nonlocal sample_count, received, connector_auth_error
             while line := await process.stdout.readline():
                 try:
                     message = json.loads(line)
@@ -760,14 +971,109 @@ class Automations:
                         if not isinstance(receipt.get("target"), str) or not receipt["target"] or receipt.get("status") not in {"accepted", "delivered"}:
                             raise ValueError("投递回执需要目标与 accepted/delivered 状态。")
                         run = self.run(run_id)
+                        if (script_spec.get('verification') or {}).get('kind') == 'document' and not run['nodes'][node_id].get('verification', {}).get('matched'):
+                            raise ValueError('固定的文档验收尚未通过，不能确认投递。')
+                        if run['nodes'][node_id].get('verification', {}).get('matched') is False:
+                            raise ValueError('正文校验未通过，不能确认投递。')
                         if run["nodes"][node_id].get("receipt"):
                             raise ValueError("每个输出节点只能确认一次投递。")
                         run["nodes"][node_id]["receipt"] = json.loads(self.redact(json.dumps(receipt, ensure_ascii=False)))
                         self.put("automation_runs", run)
                         self.changed(task_id)
                         result = True
+                    elif op == 'verify_document' and role == 'output':
+                        from .document_verification import pointer, verify_document
+                        verification = {'ok': False, 'matched': False, 'version': 1, 'inputName': message.get('inputName'), 'evidenceId': message.get('evidenceId')}
+                        try:
+                            observed = observed_calls.get(message.get('evidenceId'))
+                            if not observed or observed['effect'] != 'read':
+                                raise ValueError('校验必须使用本输出步骤实际只读调用的返回值。')
+                            name = message.get('inputName')
+                            contract = script_spec.get('verification')
+                            if not contract:
+                                raise ValueError('此任务未声明文档验收规则，请重新搭建并保存。')
+                            declared = (contract['input'], contract['expectedFormat'], contract.get('expectedTitle'), contract['titlePolicy'])
+                            requested = (name, message.get('expectedFormat'), message.get('expectedTitle'), message.get('titlePolicy'))
+                            if requested != declared:
+                                raise ValueError('脚本校验参数与固定验收规则不一致，不能擅自放宽或更换期望。')
+                            original = (inputs or {}).get(name)
+                            if not original:
+                                raise ValueError('校验原文需要引用本节点已绑定的输入。')
+                            self.verify_values({name: original})
+                            expected = Path(original['path']).read_text() if original['kind'] == 'file' else original['value']
+                            response = observed['result']
+                            verification['fields'] = {'content': {'evidenceId': message.get('evidenceId'), 'path': message['contentPath']}}
+                            def read_field(path, evidence_id=None):
+                                origin = observed_calls.get(evidence_id or message.get('evidenceId'))
+                                if not origin or origin['effect'] != 'read':
+                                    raise ValueError('验收字段必须来自本输出步骤实际只读调用。')
+                                return pointer(origin['result'], path)
+                            for field in ('format', 'title'):
+                                if message.get(field + 'Path'):
+                                    verification['fields'][field] = {
+                                        'evidenceId': message.get(field + 'EvidenceId') or message.get('evidenceId'),
+                                        'path': message[field + 'Path']}
+                            actual = pointer(response, message['contentPath'])
+                            options = {'expected_format': message.get('expectedFormat', 'markdown'),
+                                       'actual_format': read_field(message['formatPath'], message.get('formatEvidenceId')) if message.get('formatPath') else message.get('actualFormat', 'text'),
+                                       'expected_title': message.get('expectedTitle'),
+                                       'actual_title': read_field(message['titlePath'], message.get('titleEvidenceId')) if message.get('titlePath') else None,
+                                       'title_policy': message.get('titlePolicy', 'preserve'), 'version': message.get('version')}
+                            verification.update(verify_document(expected, actual, **options))
+                        except Exception as error:
+                            verification['error'] = self.redact(str(error))[:500]
+                            raise
+                        finally:
+                            verification['ok'] = verification['matched']
+                            run = self.run(run_id)
+                            run['nodes'][node_id]['verification'] = verification
+                            self.put('automation_runs', run)
+                            self.changed(task_id)
+                        if not verification['matched']:
+                            raise ValueError('回读的正文内容或顺序与交付要求不一致，已停止确认投递。')
+                        result = verification
                     elif op == "request":
                         result = await asyncio.to_thread(self.http_request, message)
+                    elif op == "connector":
+                        key, operation = message.get("connectorId"), message.get("operation")
+                        grant = next((g for g in version["spec"].get("connectors", []) if g["id"] == key), None)
+                        if not grant or operation not in grant["operations"]:
+                            raise ValueError("此版本自动化未授权这项连接器操作，请先修改并保存流程。")
+                        call_key = message.get("callKey", "")
+                        if not isinstance(call_key, str) or len(call_key) > 500:
+                            raise ValueError("连接器调用标识需要不超过 500 字的字符串。")
+                        evidence = {"at": now(), "connectorId": key, "operation": operation, "callKey": call_key,
+                                    "arguments": message.get("arguments", {}), "revision": version.get("connectorVersions", {}).get(key)}
+                        contract = version.get('connectorContracts', {}).get(key, {}).get(operation, {})
+                        operation_effect = contract.get('effect')
+                        if not operation_effect:
+                            operation_effect = next((o.get('effect') for o in self.connectors.entry(key)['manifest'].get('operations', []) if o['name'] == operation), None)
+                        try:
+                            result = await self.connectors.call(key, operation, message.get("arguments", {}), role=role,
+                                expected_revision=version.get("connectorVersions", {}).get(key),
+                                expected_contract=version.get('connectorContracts', {}).get(key, {}).get(operation),
+                                delivery_key=f"{run_id}:{node_id}:{operation}:{call_key}" if run_id else "")
+                            evidence_id = uid('connector_call')
+                            result['_evidenceId'] = evidence_id
+                            # Only document outputs consume readback snapshots. Service
+                            # inputs may poll indefinitely; their audit is already on disk.
+                            if role == 'output' and (script_spec.get('verification') or {}).get('kind') == 'document' and operation_effect == 'read':
+                                observed_calls[evidence_id] = {'result': copy.deepcopy(result), 'effect': operation_effect}
+                            evidence.update(status="returned", result=result)
+                        except AuthorizationRequired as error:
+                            evidence.update(status="authorization_required", error=self.redact(error))
+                            connector_auth_error = error
+                            task = self.task(task_id)
+                            task["blockedConnector"] = key
+                            self.put("automation_tasks", task)
+                            self.changed(task_id)
+                            raise
+                        except Exception as error:
+                            evidence.update(status="unconfirmed", error=self.redact(error))
+                            raise
+                        finally:
+                            with (directory / "connector-calls.jsonl").open("a") as handle:
+                                handle.write(self.redact(json.dumps(evidence, ensure_ascii=False)) + "\n")
                     else:
                         raise ValueError("当前脚本不能执行这个操作。")
                     reply = {"result": result}
@@ -775,8 +1081,14 @@ class Automations:
                     reply = {"error": self.redact(error)}
                 process.stdin.write((json.dumps(reply, ensure_ascii=False) + "\n").encode())
                 await process.stdin.drain()
+                if connector_auth_error:
+                    # A script may catch RuntimeError and keep polling or emit fallback
+                    # data. Authorization loss stops the process at the host boundary.
+                    raise connector_auth_error
             await process.wait()
             await error_task
+            if connector_auth_error:
+                raise connector_auth_error
             if process.returncode:
                 raise RuntimeError(self.redact("".join(errors)[-3000:]) or f"Python 脚本退出码 {process.returncode}")
             if role == "sample" and not sample_count:
@@ -814,12 +1126,24 @@ class Automations:
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def handle(self, method, params):
+        if method == 'automation_script_sdk':
+            from .script_worker import sdk_contract
+            return sdk_contract()
         await self.startup()
         task_id = params.get("taskId")
         if method == "automation_new_conversation":
             return self.new_conversation(params.get("seedLoopId"))
         if method == "automation_message":
             return self.message(task_id, params["role"], params["text"])
+        if method == 'automation_wait_for_connectors':
+            return self.wait_for_connectors(task_id, params['connectorIds'])
+        if method == 'automation_connection_waits':
+            return [{'taskId': t['id'], **t['connectionWait']} for t in self.list()
+                    if t.get('connectionWait', {}).get('status') == 'waiting' and not t['enabled']]
+        if method == 'automation_claim_connector_resume':
+            return self.claim_connection_resume(task_id, params['waitId'])
+        if method == 'automation_clear_connection_wait':
+            return self.clear_connection_wait(task_id, params.get('waitId'))
         if method == "automation_update_draft":
             return self.update_draft(task_id, params["spec"])
         if method == "automation_session_get":
@@ -839,7 +1163,9 @@ class Automations:
                     if definition.get("schemaVersion") != 2 or "finalOutputs" not in definition:
                         continue
                     declared = declared_outputs(definition)
-                    versions.append({"revision": item["revision"], "inputs": definition["inputs"], "outputs": [{"key": key, "label": declared[ref]["label"]} for ref, key in output_keys(definition).items()]})
+                    versions.append({"revision": item["revision"], "inputs": definition["inputs"], "outputs": [
+                        {"key": key, "label": declared[ref]["label"], **({'format': fmt} if (fmt := document_output_format(declared[ref])) else {})}
+                        for ref, key in output_keys(definition).items()]})
                 if versions:
                     catalog.append({"id": loop["id"], "title": loop["title"], "versions": versions})
             return catalog
@@ -852,6 +1178,9 @@ class Automations:
             spec = params.get("spec") or (self.task(task_id).get("draftSpec") if task_id else None)
             if not spec:
                 raise ValueError("请先通过对话搭建自动化流程。")
+            spec, _ = self.check_spec(spec)
+            if self.connectors:
+                await self.connectors.prepare_contracts(spec.get('connectors', []))
             return self.save(spec, task_id)
         if method == "automation_enable":
             return await self.enable(task_id, params["enabled"])
@@ -860,8 +1189,15 @@ class Automations:
         if method == "automation_run":
             self.require_saved(task_id)
             if params.get("runId"):
-                return self.replay(task_id, params["runId"])
-            return self.accept(task_id, uid("manual"), params.get("inputs", {}), manual=True)
+                accepted = self.replay(task_id, params["runId"])
+            else:
+                accepted = self.accept(task_id, uid("manual"), params.get("inputs", {}), manual=True)
+            if params.get('reportToConversation'):
+                self.report_run_in_conversation(task_id, accepted['runId'])
+            return accepted
+        if method == 'automation_report_run':
+            self.report_run_in_conversation(task_id, params['runId'], progress=True)
+            return self.run(params['runId'])
         if method == "automation_retry":
             return self.retry(task_id, params["runId"], params.get("confirm", False))
         if method == "automation_test_output":
@@ -876,6 +1212,7 @@ class Automations:
             await self.enable(task_id, False)
             task = self.task(task_id)
             task["deletedAt"] = now()
+            task.pop('connectionWait', None)
             self.put("automation_tasks", task)
             self.changed(task_id)
             return True

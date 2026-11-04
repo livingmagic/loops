@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,11 @@ if (process.env.LOOPS_DATA_DIR) {
 }
 if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 let host, window, quitting = false;
+const openedAuthorizations = new Map();
+function validAuthorization(url) {
+  const parsed = new URL(url);
+  return !parsed.username && !parsed.password && (parsed.protocol === 'https:' || parsed.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname));
+}
 function trusted(event) {
   if (event.senderFrame !== window?.webContents.mainFrame) throw new Error('无效的窗口请求。');
 }
@@ -29,12 +34,24 @@ app.setName('Loops');
 app.dock?.setIcon(path.join(root, 'public/assets/loops-icon.png'));
 const dataDirectory = process.env.LOOPS_DATA_DIR || app.getPath('userData');
 try {
-  host = new Host({ dataDirectory, configDirectory: process.env.LOOPS_CONFIG_DIR || (app.isPackaged ? dataDirectory : root),
+  host = new Host({ dataDirectory,
+    encryptSecret: value => { if (!safeStorage.isEncryptionAvailable()) throw new Error(); return safeStorage.encryptString(value).toString('base64'); },
+    decryptSecret: value => safeStorage.decryptString(Buffer.from(value, 'base64')), configDirectory: process.env.LOOPS_CONFIG_DIR || (app.isPackaged ? dataDirectory : root),
     fallbackConfigDirectory: app.isPackaged ? undefined : path.resolve(root, '..'),
     runtimeDirectory: app.isPackaged ? path.join(process.resourcesPath, 'runtime') : path.resolve(root, '../runtime') });
 } catch (error) { dialog.showErrorBox('Loops 启动失败', error.message); app.quit(); }
 if (host) {
-  ipcMain.handle('loops:request', (event, method, params) => { trusted(event); return host.action(method, params); });
+  ipcMain.handle('loops:request', async (event, method, params) => {
+    trusted(event);
+    if (method === 'connector_open_authorization') {
+      const connection = (await host.action('connector_list')).find(item => item.manifest.id === params.connectorId);
+      const url = connection?.authorization?.url;
+      if (!url) throw new Error('当前没有待完成的授权。');
+      if (!validAuthorization(url)) throw new Error('授权地址无效。');
+      return shell.openExternal(url);
+    }
+    return host.action(method, params);
+  });
   ipcMain.handle('loops:choose', async (event, kind) => {
     trusted(event);
     if (!['directory', 'file'].includes(kind)) throw new Error('无效的文件选择。');
@@ -48,7 +65,17 @@ if (host) {
     return shell.openPath(loop.workdir);
   });
   ipcMain.handle('loops:url', (event, url) => { trusted(event); if (!/^https:\/\/github\.com\//.test(url)) throw new Error('只能打开交付记录中的 GitHub 地址。'); return shell.openExternal(url); });
-  host.on('event', (event) => { if (!window?.isDestroyed()) window?.webContents.send('loops:event', event); });
+  host.on('event', (event) => {
+    if (!window?.isDestroyed()) window?.webContents.send('loops:event', event);
+    if (event.event === 'connector_authorization' && Date.now() - (openedAuthorizations.get(event.connectorId)?.at || 0) > 1000) {
+      try {
+        if (validAuthorization(event.url)) {
+          openedAuthorizations.set(event.connectorId, { url: event.url, at: Date.now() });
+          shell.openExternal(event.url).catch(() => {}); // The dialog retains a manual link.
+        }
+      } catch { /* Invalid external URLs are never opened. */ }
+    }
+  });
   createWindow();
   app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });
   app.on('before-quit', (event) => {

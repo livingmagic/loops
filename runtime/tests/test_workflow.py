@@ -31,6 +31,30 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.service.store.db.close()
         self.temp.cleanup()
 
+    async def test_conversation_process_survives_updates_and_recovers_after_restart(self):
+        loop_id = self.loop['id']
+        process = {'status': 'running', 'startedAt': '2026-11-03T00:00:00+00:00', 'events': [{'type': 'tool', 'status': 'running', 'text': '读取'}]}
+        await self.service.handle('message', {'loopId': loop_id, 'role': 'process', 'text': '', 'extra': {'id': 'progress-test', 'process': process}})
+        process['current'] = '正在重试 1/5'
+        await self.service.handle('message_update', {'loopId': loop_id, 'messageId': 'progress-test', 'process': process})
+        self.service.store.recover()
+        saved = self.service.store.get(loop_id)['messages'][0]['process']
+        self.assertEqual(saved['status'], 'interrupted')
+        self.assertEqual(saved['current'], '正在重试 1/5')
+        self.assertEqual(saved['events'][0]['status'], 'interrupted')
+        self.assertGreater(saved['durationMs'], 0)
+
+    async def test_command_rejects_structured_json_argument_before_launch(self):
+        definition = flow("import os,json\nfrom pathlib import Path\nc=json.loads(os.environ['LOOPS_CONTEXT'])\nPath(c['outputs']['report']).write_text('[1,2]')")
+        definition['steps'][0]['outputs'][0]['kind'] = 'json'
+        definition['steps'].append({'id': 'check', 'label': '检查数据', 'instructions': '校验数据', 'inputs': {},
+            'execution': {'tool': 'command', 'command': ['python', '-c', 'pass', '${steps.convert.outputs.report}']},
+            'outputs': [], 'checks': [{'kind': 'command', 'command': ['python', '-c', 'pass']}], 'onFailure': {'action': 'stop'}})
+        await self.build(definition)
+        result = await self.execute()
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('JSON 数据请通过步骤 inputs 和 LOOPS_CONTEXT 读取', result['reason'])
+
     async def build(self, definition):
         return await self.service.handle("definition", {"loopId": self.loop["id"], "definition": definition})
 

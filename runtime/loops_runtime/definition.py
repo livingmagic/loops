@@ -3,7 +3,10 @@ import re
 from pathlib import PurePosixPath
 
 
-TOOLS = {"codex": "Codex", "python": "Python", "command": "命令行"}
+from .agent_clients import validate_agent_id, validate_model
+
+
+TOOLS = {"agent": "Agent", "codex": "Codex", "python": "Python", "command": "命令行", "mcp": "MCP"}
 IDENTIFIER = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
 REFERENCE = re.compile(r"\$\{([^{}]+)\}")
 
@@ -41,7 +44,7 @@ def validate(value, config):
         if not item.get("label") or item.get("kind") not in {"file", "text"}:
             raise ValueError("输入需要名称和文件或文本类型。")
     step_ids = {step["id"] for step in steps}
-    available = {"workspace", "failure", "checks"}
+    available = {"workspace", "bundle", "failure", "checks"}
     available.update(f"inputs.{item['id']}" for item in inputs)
     available.update(f"resources.{item['id']}" for item in config.get("resources", []))
     for step in steps:
@@ -50,13 +53,44 @@ def validate(value, config):
         execution = step.get("execution", {})
         tool = execution.get("tool")
         if tool not in TOOLS:
-            raise ValueError("当前可使用 Codex、Python 或命令行执行步骤。")
+            raise ValueError("当前可使用 Agent、Python、命令行或 MCP 执行步骤。")
+        if tool == 'mcp':
+            if (not isinstance(execution.get('connectorId'), str) or not IDENTIFIER.fullmatch(execution['connectorId'])
+                    or not isinstance(execution.get('operation'), str) or not execution['operation']
+                    or '${' in execution['operation'] or not isinstance(execution.get('arguments'), dict)):
+                raise ValueError('MCP 步骤需要固定的连接器、操作名称和参数对象。')
+            if 'forEach' in execution and (not isinstance(execution['forEach'], str) or not REFERENCE.fullmatch(execution['forEach'])):
+                raise ValueError('forEach 必须完整引用前序步骤的列表数据。')
+        if 'forEach' in execution:
+            if tool not in {'mcp', 'command'} or not isinstance(execution['forEach'], str) or not REFERENCE.fullmatch(execution['forEach']):
+                raise ValueError('forEach 仅用于 MCP 或命令行，必须完整引用列表数据。')
+        if tool in {'agent', 'codex'} and 'reasoning' in execution:
+            if not execution['reasoning']:
+                raise ValueError('思考强度不能为空；继承时请省略 reasoning。')
+            validate_model(execution['reasoning'])
+        if tool in {'agent', 'codex'} and 'model' in execution:
+            if execution['model'] is None:
+                raise ValueError('继承默认模型时请省略 model。')
+            validate_model(execution['model'])
+        if tool == "agent" and "agentId" in execution:
+            validate_agent_id(execution["agentId"])
+        if tool in {"agent", "codex"} and (not isinstance(execution.get("session", "default"), str) or not execution.get("session", "default").strip()):
+            raise ValueError("Agent 会话名称不能为空。")
         if tool == "python" and execution.get("script") not in scripts:
             raise ValueError("Python 步骤需要引用本流程保存的脚本。")
         if tool == "command":
             validate_command(execution.get("command"))
-        if tool == "codex" and execution.get("mode", "write") not in {"read-only", "write"}:
-            raise ValueError("Codex 步骤需要有效的执行权限。")
+            if execution.get('effect', 'write') not in {'read', 'write'}:
+                raise ValueError('命令 effect 必须为 read 或 write；未知影响按 write 处理。')
+            timeout = execution.get('timeoutSeconds', 180)
+            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 1200:
+                raise ValueError('命令超时必须大于 0 且不超过 1200 秒。')
+            if 'forEach' in execution and '${item' in execution['command'][0]:
+                raise ValueError('逐项数据只能用于命令参数，不能选择可执行程序。')
+        if tool in {"agent", "codex"} and execution.get("mode", "write") not in {"read-only", "write"}:
+            raise ValueError("Agent 步骤需要有效的执行权限。")
+        if tool in {'agent', 'codex'} and execution.get('responseOutput') and execution.get('mode', 'write') != 'read-only':
+            raise ValueError('写入模式由 Agent 生成产出文件，不能同时把结束回复保存为产出；请移除 responseOutput，或使用只读模式直接返回正文。')
         failure = step.get("onFailure", {"action": "stop"})
         if failure.get("action") not in {"stop", "retry", "goto"}:
             raise ValueError("失败处理需要选择结束、重试或返回步骤。")
@@ -67,9 +101,23 @@ def validate(value, config):
             raise ValueError("失败后返回的步骤不存在。")
         output_ids = set()
         for output in step.get("outputs", []):
-            if not IDENTIFIER.fullmatch(output.get("id", "")) or output["id"] in output_ids or not output.get("path") or not output.get("label"):
-                raise ValueError("步骤产出需要唯一标识、名称和路径。")
+            if not IDENTIFIER.fullmatch(output.get("id", "")) or output["id"] in output_ids or not output.get("label"):
+                raise ValueError("步骤产出需要唯一标识和名称。")
+            if output.get('kind', 'file') == 'value':
+                pointer = output.get('pointer', '') if tool == 'command' else output.get('pointer')
+                if tool not in {'mcp', 'command'} or not isinstance(pointer, str) or (pointer and not pointer.startswith('/')) or re.search(r'~(?![01])', pointer):
+                    raise ValueError('数据产出只用于 MCP 或命令行；pointer 使用 JSON Pointer。')
+                if tool == 'command' and (output.get('source') != 'stdout' or output.get('format') != 'json'):
+                    raise ValueError('命令数据产出需要 source=stdout、format=json。')
+            elif output.get('kind', 'file') not in {'file', 'json'} or not isinstance(output.get('path'), str) or not output['path']:
+                raise ValueError('文件产出需要有效路径。')
+            elif tool == 'command' and 'forEach' in execution:
+                raise ValueError('逐项命令使用 stdout JSON 数据产出；文件汇总放在后续步骤。')
+            elif tool == 'mcp':
+                raise ValueError('MCP 返回请声明为数据产出；需要生成本机文件时使用后续步骤。')
             output_ids.add(output["id"])
+        if tool in {'agent', 'codex'} and execution.get('responseOutput') and execution['responseOutput'] not in output_ids:
+            raise ValueError('回复保存位置需要引用本步骤产出标识。')
         for check in step.get("checks", []):
             if check.get("kind") == "command":
                 validate_command(check.get("command"))
@@ -88,7 +136,16 @@ def validate(value, config):
             elif isinstance(item, list):
                 for entry in item:
                     yield from refs(entry)
-        for ref in refs({key: step[key] for key in ("instructions", "inputs", "execution", "outputs", "checks") if key in step}):
+        execution_refs = dict(execution)
+        if tool in {'mcp', 'command'} and 'forEach' in execution:
+            field = 'arguments' if tool == 'mcp' else 'command'
+            for ref in refs(execution[field]):
+                if ref not in available and ref != 'item' and not ref.startswith('item.'):
+                    raise ValueError(f"逐项参数引用了不可用的数据：{ref}")
+            execution_refs.pop(field)
+        referenced = {key: step[key] for key in ('instructions', 'inputs', 'outputs', 'checks') if key in step}
+        referenced['execution'] = execution_refs
+        for ref in refs(referenced):
             if ref not in available:
                 raise ValueError(f"步骤 {step['label']} 引用了尚不可用的数据：{ref}")
         available.update(f"steps.{step['id']}.outputs.{key}" for key in output_ids)

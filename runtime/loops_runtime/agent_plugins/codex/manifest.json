@@ -1,0 +1,15 @@
+{
+  "apiVersion": 1,
+  "id": "codex",
+  "name": "Codex",
+  "version": "1.0.0",
+  "command": "codex",
+  "paths": [
+    ".local/bin/codex",
+    ".npm-global/bin/codex"
+  ],
+  "modes": [
+    "read-only",
+    "write"
+  ]
+}

@@ -6,7 +6,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from .codex_adapter import CodexSession
+from .agent_clients import AgentClients
 from .environment import command_environment
 from .store import ACTIVE, now
 from .workflow import create_run
@@ -17,9 +17,11 @@ class ExecutionError(RuntimeError):
 
 
 class Runner:
-    def __init__(self, store, notify, session_factory=CodexSession):
+    def __init__(self, store, notify, session_factory=None, connectors=None, agent_clients=None):
         self.store, self.notify, self.session_factory = store, notify, session_factory
         self.tasks = {}
+        self.connectors = connectors
+        self.agent_clients = agent_clients or AgentClients(store.root)
 
     def start(self, loop_id, inputs=None, snapshot=None):
         loop = self.store.get(loop_id)
@@ -53,7 +55,13 @@ class Runner:
 
     async def execute(self, loop_id, run_id):
         context = RunContext(self.store, loop_id, run_id, self.notify, self.session_factory)
+        context.connectors = self.connectors
+        context.agent_clients = self.agent_clients
         try:
+            if not self.session_factory:
+                bindings = await self.agent_clients.bind(context.run["definition"], context.run["config"])
+                context.run["agentBindings"] = bindings
+                self.store.update_run(loop_id, run_id, agentBindings=bindings)
             self.store.update_run(loop_id, run_id, status="running")
             self.notify()
             source = Path(context.run["directory"]) / "workflow.py"
@@ -86,7 +94,10 @@ class RunContext:
             extra.setdefault("stage", self.stage_id)
         self.store.event(self.loop_id, self.run_id, kind, text, **extra)
         if kind == "session":
-            self.store.update_run(self.loop_id, self.run_id, threadId=extra["threadId"])
+            sessions = dict(self.store.run(self.loop_id, self.run_id).get("agentSessions", {}))
+            key = extra.get("sessionKey", "legacy")
+            sessions[key] = {"agentId": extra.get("agentId", "codex"), "threadId": extra["threadId"]}
+            self.store.update_run(self.loop_id, self.run_id, threadId=extra["threadId"], agentSessions=sessions)
         self.notify()
 
     def stage(self, stage_id, correcting=False):
@@ -105,25 +116,72 @@ class RunContext:
         self.store.update_run(self.loop_id, self.run_id, status=status, reason=reason, endedAt=now(), **extra)
         self.emit("finished", reason or "已完成交付。")
 
-    async def command(self, argv, *, cwd=None, check=True, timeout=180, capture_all=False, env=None):
+    async def command(self, argv, *, cwd=None, check=True, timeout=180, capture_all=False, env=None, separate_output=False):
         argv = [sys.executable if value in {"python", "python3"} and index == 0 else value for index, value in enumerate(argv)]
         self.emit("command", shlex.join(argv), stage=self.stage_id)
         process = await asyncio.create_subprocess_exec(*argv, cwd=str(cwd or self.repo), stdout=asyncio.subprocess.PIPE,
-                                                       stderr=asyncio.subprocess.STDOUT, start_new_session=True,
+                                                       stderr=asyncio.subprocess.PIPE if separate_output else asyncio.subprocess.STDOUT, start_new_session=True,
                                                        env=command_environment() if env is None else env)
+        buffers = {'stdout': bytearray(), 'stderr': bytearray()}
+        overflow = asyncio.get_running_loop().create_future()
+        async def read_stream(reader, name):
+            while chunk := await reader.read(65536):
+                buffers[name].extend(chunk)
+                if name == 'stdout' and len(buffers[name]) > 8 * 1024 * 1024:
+                    del buffers[name][8 * 1024 * 1024:]
+                    if not overflow.done():
+                        overflow.set_result(ExecutionError('命令标准输出超过 8 MiB，请改用文件产出。'))
+                if name == 'stderr' and len(buffers[name]) > 12000:
+                    del buffers[name][:-12000]
+        async def collect():
+            await asyncio.gather(read_stream(process.stdout, 'stdout'), read_stream(process.stderr, 'stderr'))
+            await process.wait()
+        collector = asyncio.create_task(collect()) if separate_output else asyncio.create_task(process.communicate())
+        def evidence():
+            return {'command': argv, 'exitCode': process.returncode,
+                    'stdout': buffers['stdout'].decode('utf-8', 'replace'),
+                    'stderr': buffers['stderr'].decode('utf-8', 'replace'), 'at': now()}
         try:
-            raw, _ = await asyncio.wait_for(process.communicate(), timeout)
-        except BaseException:
+            done, _ = await asyncio.wait([collector, overflow], timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+            if overflow in done:
+                raise overflow.result()
+            if collector not in done:
+                raise asyncio.TimeoutError()
+            captured = collector.result()
+        except BaseException as error:
+            # Always kill the group, including descendants that outlive their parent.
             try:
                 os.killpg(process.pid, signal.SIGTERM)
-                await asyncio.wait_for(process.wait(), 3)
-            except (ProcessLookupError, asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(collector), 0.5)
+            except BaseException:
+                pass
+            finally:
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+                except PermissionError:
+                    # macOS can deny a signal after the group has already exited.
+                    # Suppress only when process exit and both pipe closures are known.
+                    if process.returncode is None or not collector.done() or collector.cancelled() or collector.exception():
+                        raise
                 await process.wait()
-            raise
+                collector.cancel()
+                await asyncio.gather(collector, return_exceptions=True)
+            if isinstance(error, asyncio.TimeoutError):
+                error = ExecutionError(f'命令超过 {timeout:g} 秒，已终止进程。')
+                error.timed_out = True
+            error.command_result = evidence()
+            raise error
+        if separate_output:
+            result = evidence()
+            result['output'] = (result['stdout'] + result['stderr'])[-12000:]
+            if check and process.returncode:
+                error = ExecutionError(f"命令失败，退出码 {process.returncode}：{result['output'][-4000:]}")
+                error.command_result = result
+                raise error
+            return result
+        raw, _ = captured
         text = raw.decode("utf-8", "replace")
         if check and process.returncode:
             raise ExecutionError(f"命令失败：{' '.join(argv)}\n{text[-4000:]}")

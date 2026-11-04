@@ -1,1 +1,4 @@
 openai-codex==0.163.0
+mcp==1.30.0
+keyring==25.7.0
+markdown-it-py==4.2.0
