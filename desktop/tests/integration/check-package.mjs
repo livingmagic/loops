@@ -43,7 +43,6 @@ try {
       execution: { tool: 'python', script: 'scripts/convert.py' }, outputs: [{ id: 'report', label: '结果', path: 'result.txt' }], checks: [], onFailure: { action: 'stop' } }],
   };
   await host.engine.call('definition', { loopId: loop.id, definition });
-  const saved = await host.action('save', { loopId: loop.id });
   let onEvent, timer;
   const finished = new Promise((resolve, reject) => {
     timer = setTimeout(() => reject(new Error('Package smoke timed out.')), 30000);
@@ -62,6 +61,7 @@ try {
   } finally { clearTimeout(timer); host.off('event', onEvent); }
   assert.equal(run.status, 'success', run.reason);
   assert.equal(await fs.readFile(run.artifacts[0].path, 'utf8'), 'HELLO LOOPS');
+  const saved = await host.action('save', { loopId: loop.id });
   await host.close();
   host = new Host(options);
   const restored = (await host.action('list')).find((item) => item.id === loop.id);

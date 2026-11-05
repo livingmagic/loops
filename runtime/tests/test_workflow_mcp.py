@@ -68,8 +68,8 @@ class MCPWorkflowTests(unittest.IsolatedAsyncioTestCase):
                                    'outputs': [{'id': 'file', 'label': '报告', 'path': 'report.json'}], 'checks': []})
         definition['finalOutputs'].append('${steps.report.outputs.file}')
         await self.build(definition)
-        saved = await self.service.handle('save', {'loopId': self.loop['id']})
         first = await self.run_flow()
+        saved = await self.service.handle('save', {'loopId': self.loop['id']})
         self.assertEqual(first['status'], 'success', first.get('reason'))
         result = first['stepResults'][1]['outputs']['data']
         self.assertEqual(result['count'], len('中文 typed data'))
@@ -144,6 +144,7 @@ class MCPWorkflowTests(unittest.IsolatedAsyncioTestCase):
     async def test_data_output_remains_a_file_when_used_by_automation(self):
         import asyncio
         await self.build(flow())
+        await self.run_flow()
         await self.service.handle('save', {'loopId': self.loop['id']})
         target = self.root / 'automation-receipt.json'
         spec = {'title': 'MCP automation',

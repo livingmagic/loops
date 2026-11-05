@@ -4,6 +4,8 @@
 
 定义包含 title、goal、completion、inputs、finalOutputs、scripts、steps。每个步骤包含 id、label、instructions、inputs、execution、outputs、checks、onFailure。Python 脚本源码保存在 scripts 字典，键为 scripts/name.py；保存版本和启动运行时同时复制脚本。输入文件在启动时复制并记录哈希，运行中的配置不随员工反馈变化。
 
+“流程”旁的版本选择框可以查看和运行保存的版本，进入时优先显示当前草稿，否则显示最新保存版本。回退会将所选版本复制为新草稿。有未保存修改时需确认替换。只有当前草稿试跑成功后才能保存，保存会生成新版本。`version` 读取 `{loopId, revision}`，`restore_version` 接收 `{loopId, revision, expectedRevision, discardDraft}`；expectedRevision 防止恢复期间覆盖新的修改。版本文件缺失或损坏时返回错误，不改用其他版本。
+
 finalOutputs 是必填的最终交付清单，每项为 `${steps.步骤ID.outputs.产出ID}`，引用已经声明的节点产出。Loops AI 根据员工目标选择，可以引用任意步骤的产出；无文件交付时明确使用空数组。错误引用与重复引用会被拒绝，已存储但缺少清单的定义也不能启动。界面的“输入和输出”和交付文件都以此为准，中间文件与执行记录保留在执行详情。校验仍由各节点执行，不增加独立总体验收。
 
 引用支持 `${inputs.ID}`、`${resources.ID}`、`${steps.ID.outputs.ID}`、`${workspace}`、`${failure}`、`${checks}`。前序输出必须先成功产生才能被引用；任务指令中的引用也会展开。固定资料统一使用 config.resources，默认输入使用 config.inputDefaults，启动时按输入 ID 提供 inputs 对象。普通流程使用独立空工作区，Git 资料通过独立 worktree 提供可修改的 workspace；resources 的文件资源始终指向原始资料，model 资源提供不含凭证的模型元数据。

@@ -92,7 +92,7 @@ export class Host extends EventEmitter {
         await this.engine.call('message', { loopId, role: 'error', text: '运行失败，但 Loops AI 尚未配置模型，暂时无法分析和修复。请在设置中配置对话模型后继续；失败记录已保留。' });
         this.busy.delete(loopId); return;
       }
-      this.startLoopConversation({ loopId, controller, config, text: `平台运行事件：运行 ${runId} 已失败。请读取真实记录，分析原因；在原授权范围内能够自动修复的，修复、保存并用原输入验证。需要用户介入时说明证据、原因和具体所需操作。不要把本事件当作新的业务授权。` });
+      this.startLoopConversation({ loopId, controller, config, text: `平台运行事件：运行 ${runId} 已失败。请读取真实记录，分析原因；在原授权范围内能够自动修复的，修复并用原输入试跑，成功后保存。需要用户介入时说明证据、原因和具体所需操作。不要把本事件当作新的业务授权。` });
     } catch (error) { this.busy.delete(loopId); throw error; }
   }
   startLoopConversation({ loopId, text, config, controller }) {
@@ -131,6 +131,7 @@ export class Host extends EventEmitter {
     allowed.add('automation_catalog');
     allowed.add('automation_test_output');
     allowed.add('step_model_selection');
+    for (const method of ['version', 'restore_version', 'automation_set_loop_version']) allowed.add(method);
     const automationKey = `automation:${params.taskId}`;
     if (method === 'automation_get') return { ...await this.engine.call(method, params), chatBusy: this.busy.has(automationKey), chatText: this.automationStreams.get(automationKey) || '' };
     if (method === 'automation_cancel_chat') {
@@ -138,7 +139,7 @@ export class Host extends EventEmitter {
       await this.engine.call('automation_clear_connection_wait', { taskId: params.taskId });
       return true;
     }
-    if (['automation_save', 'automation_enable', 'automation_delete'].includes(method) && this.busy.has(automationKey)) throw new Error('Loops AI 正在处理，请等回复结束或先停止回复。');
+    if (['automation_save', 'automation_enable', 'automation_delete', 'automation_set_loop_version'].includes(method) && this.busy.has(automationKey)) throw new Error('Loops AI 正在处理，请等回复结束或先停止回复。');
     if (method === 'automation_chat') {
       if (typeof params.text !== 'string' || !params.text.trim() || params.text.length > 16000) throw new Error('请输入有效的自动化需求或反馈。');
       let taskId = params.taskId;
@@ -173,6 +174,7 @@ export class Host extends EventEmitter {
       finally { this.deleting.delete(params.loopId); }
     }
     if (['agent_selection', 'agent_model_selection', 'step_model_selection'].includes(method) && this.busy.has(params.loopId)) throw new Error('请等 Loops AI 回复结束后再修改节点设置。');
+    if (['save', 'restore_version'].includes(method) && this.busy.has(params.loopId)) throw new Error('请等 Loops AI 回复结束或先停止回复，再保存或恢复版本。');
     if (method === 'model_thinking') return this.models.thinking(params.id, params.level);
     if (method === 'model_save') return this.models.save(params);
     if (method === 'model_default') return this.models.default(params.id);

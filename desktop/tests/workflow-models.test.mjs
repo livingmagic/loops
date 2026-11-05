@@ -61,11 +61,11 @@ test('Python model resource invokes a local HTTP provider through the real engin
         execution: { tool: 'python', script: 'scripts/extract.py', args: ['--model', resource.id, '--reasoning', 'off'] },
         outputs: [{ id: 'text', label: '结果', path: 'result.txt' }], checks: [], onFailure: { action: 'stop' } }] };
     await tools.find(tool => tool.name === 'update_loop').execute('define', { definition });
-    await engine.call('save', { loopId: loop.id });
     const done = completion(engine, loop.id);
     await engine.call('start', { loopId: loop.id, inputs: { text: '这一段是输入' } });
     const run = await done;
     assert.equal(run.status, 'success', run.reason);
+    await engine.call('save', { loopId: loop.id });
     assert.equal(await fs.readFile(run.artifacts[0].path, 'utf8'), '本地 HTTP 测试返回：这一段是输入');
     assert.equal(requests.length, 1);
     assert.equal(requests[0].key, 'Bearer test-private-key');

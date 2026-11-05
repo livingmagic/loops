@@ -4,7 +4,7 @@ import { StepAgentSettings } from './StepAgentSettings.jsx';
 import { Settings } from './Settings.jsx';
 import { ModelContext } from './ModelContext.jsx';
 import { useEffect, useRef, useState } from 'react';
-import { ArrowUpRight, ArrowCounterClockwise, CaretRight, CheckCircle, Circle, DotsThree, FileText, FloppyDisk, FolderSimple, Gear, GitPullRequest, Link, Play, Plus, SpinnerGap, Stop, Trash, User, WarningCircle, X } from '@phosphor-icons/react';
+import { ArrowUpRight, ArrowCounterClockwise, CaretDown, CaretRight, CheckCircle, Circle, DotsThree, FileText, FloppyDisk, FolderSimple, Gear, GitPullRequest, Link, Play, Plus, SpinnerGap, Stop, Trash, User, WarningCircle, X } from '@phosphor-icons/react';
 import { native, request, subscribe } from './api.js';
 import { displayPath } from './path-display.js';
 import { workflowOutputs } from './workflow-outputs.js';
@@ -78,7 +78,7 @@ function RunCard({ loop, run, artifact, selected }) {
   const current = run.definition.steps.find((step) => step.id === run.stage);
   const latestChecks = [...new Map(run.checks.map((check) => [`${check.stage}-${check.label}`, check])).values()];
   const passedChecks = latestChecks.filter((check) => check.passed).length;
-  return <div id={run.id} className={cx('run-card', run.status, selected && 'selected-run')}><header className="run-card-header"><Icon size={32} weight={active ? 'regular' : 'fill'} className={active ? 'spinning' : ''} /><div className="run-card-title"><h3>{`${runName(run)} · ${statuses[run.status]}`}</h3>{run.revision !== loop.revision && <span className="run-version">修改前的流程</span>}</div></header><div className="run-card-body">
+  return <div id={run.id} className={cx('run-card', run.status, selected && 'selected-run')}><header className="run-card-header"><Icon size={32} weight={active ? 'regular' : 'fill'} className={active ? 'spinning' : ''} /><div className="run-card-title"><h3>{`${runName(run)} · ${statuses[run.status]}`}</h3><span className="run-version">版本 {run.revision}{run.mode === 'trial' ? ' · 草稿' : ''}</span></div></header><div className="run-card-body">
     <div className="run-input"><FileText size={16} />{run.input.name}<small>{date(run.startedAt)}</small></div>
     {active && <div className="run-current"><strong>{current?.label || '准备工作区'}</strong></div>}
     {run.reason && run.status !== 'success' && <p className="result-reason">{run.reason.trim().split(/\r?\n/, 1)[0]}</p>}
@@ -106,11 +106,32 @@ function WorkflowInput({ loop, onClose, act }) {
   const [values, setValues] = useState(Object.fromEntries(loop.definition.inputs.map((item) => [item.id, loop.config.inputDefaults[item.id] || ''])));
   const [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const mode = loop.savedRevision === loop.revision ? '运行' : '试跑';
-  return <Dialog title={`本次${mode}`} onClose={onClose}><form className="setup-form" onSubmit={async (event) => { event.preventDefault(); setBusy(true); try { await act('start', { loopId: loop.id, inputs: values }); onClose(); } catch (error) { setError(error.message); } finally { setBusy(false); } }}><div className="setup-fields">{loop.definition.inputs.map((item) => <div className="field" key={item.id}><label htmlFor={`input-${item.id}`}>{item.label}</label><div className="input-with-action">{item.kind === 'text' ? <textarea id={`input-${item.id}`} rows={5} required={item.required} value={values[item.id]} onChange={(event) => setValues({ ...values, [item.id]: event.target.value })} placeholder="粘贴或输入本次内容" /> : <input id={`input-${item.id}`} required={item.required} value={values[item.id]} onChange={(event) => setValues({ ...values, [item.id]: event.target.value })} placeholder="选择本次输入文件" />}{native && item.kind === 'file' && <button type="button" className="button button-secondary" onClick={async () => { const path = await window.loops.choose('file'); if (path) setValues({ ...values, [item.id]: path }); }}>选择</button>}</div></div>)}{error && <p className="form-error" role="alert">{error}</p>}</div><div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>取消</button><button className="button button-primary" disabled={busy}><Play size={18} />开始{mode}</button></div></form></Dialog>;
+  return <Dialog title={`本次${mode}`} onClose={onClose}><form className="setup-form" onSubmit={async (event) => { event.preventDefault(); setBusy(true); try { await act('start', { loopId: loop.id, inputs: values, ...(mode === '运行' ? { revision: loop.revision } : { expectedRevision: loop.revision }) }); onClose(); } catch (error) { setError(error.message); } finally { setBusy(false); } }}><div className="setup-fields">{loop.definition.inputs.map((item) => <div className="field" key={item.id}><label htmlFor={`input-${item.id}`}>{item.label}</label><div className="input-with-action">{item.kind === 'text' ? <textarea id={`input-${item.id}`} rows={5} required={item.required} value={values[item.id]} onChange={(event) => setValues({ ...values, [item.id]: event.target.value })} placeholder="粘贴或输入本次内容" /> : <input id={`input-${item.id}`} required={item.required} value={values[item.id]} onChange={(event) => setValues({ ...values, [item.id]: event.target.value })} placeholder="选择本次输入文件" />}{native && item.kind === 'file' && <button type="button" className="button button-secondary" onClick={async () => { const path = await window.loops.choose('file'); if (path) setValues({ ...values, [item.id]: path }); }}>选择</button>}</div></div>)}{error && <p className="form-error" role="alert">{error}</p>}</div><div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>取消</button><button className="button button-primary" disabled={busy}><Play size={18} />开始{mode}</button></div></form></Dialog>;
 }
 function WorkflowOutputs({ definition }) {
   const outputs = workflowOutputs(definition);
   return outputs.length ? outputs.map((output, index) => <p key={index}>{output.label}{output.path && !output.label.includes(basename(output.path)) && `（${basename(output.path)}）`}</p>) : <p>无文件输出</p>;
+}
+
+function RollbackDialog({ loop, version, act, onClose, onRestored }) {
+  const [working, setWorking] = useState(false), [error, setError] = useState('');
+  return <Dialog title={`回退到版本 ${version}`} onClose={onClose}>
+    <div className="contract-details">
+      <p>{loop.revision !== loop.savedRevision ? '这会替换未保存的草稿。' : '这会以该版本创建草稿。'}试跑成功后可保存为新版本。</p>
+      {error && <p className="form-error" role="alert">{error}</p>}
+    </div>
+    <div className="dialog-actions artifact-actions">
+      <button className="button button-secondary" onClick={onClose}>取消</button>
+      <button className="button button-primary" disabled={working} onClick={async () => {
+        setWorking(true);
+        try {
+          await act('restore_version', { loopId: loop.id, revision: version, expectedRevision: loop.revision, discardDraft: true });
+          onRestored();
+        } catch (error) { setError(error.message); }
+        finally { setWorking(false); }
+      }}>回退</button>
+    </div>
+  </Dialog>;
 }
 
 function StepDetail({ loop, step, onScript, clients, onAgentChange, onModelChange, disabled }) {
@@ -165,8 +186,25 @@ export function App() {
   const loop = storedLoop || { id: '__new__', title: '新建 Loop', definition: null, messages: [], runs: [], revision: 0, workdir: null };
   const pending = creating || Boolean(loop && (busy[loop.id] || loop.messages.some(m => m.process?.status === 'running'))), activeRun = loop?.runs.find((run) => activeStatuses.includes(run.status));
   const unsaved = loop?.definition && loop.savedRevision !== loop.revision;
-  const commandRun = loop?.runs.filter((run) => run.revision === loop.revision).at(-1);
-  const flowDefinition = loop?.definition;
+  const canSave = unsaved && loop.runs.some(run => run.revision === loop.revision && run.mode === 'trial' && run.status === 'success');
+  const [versionChoice, chooseVersion] = useState(null);
+  const [versionResult, setVersionResult] = useState(null);
+  const selectedVersion = versionChoice?.loopId === loop.id && versionChoice.workingRevision === loop.revision ? versionChoice.revision : loop.revision;
+  const historical = selectedVersion !== loop.revision;
+  const versionKey = historical ? `${loop.id}:${selectedVersion}` : null;
+  const selectedSnapshot = versionResult?.key === versionKey ? versionResult?.snapshot : null;
+  const viewLoop = historical ? selectedSnapshot && { ...loop, ...selectedSnapshot, savedRevision: selectedVersion } : loop;
+  const flowDefinition = viewLoop?.definition;
+  const viewingDraft = !historical && unsaved;
+  useEffect(() => {
+    if (!versionKey) return;
+    let current = true;
+    request('version', { loopId: loop.id, revision: selectedVersion }).then(
+      snapshot => { if (current) setVersionResult({ key: versionKey, snapshot }); },
+      error => { if (current) setVersionResult({ key: versionKey, error: error.message }); },
+    );
+    return () => { current = false; };
+  }, [versionKey, loop.id, selectedVersion]);
   async function act(method, params) {
     const result = await request(method, params);
     if (method === 'new' || method === 'restore') setActive(result.id);
@@ -196,12 +234,13 @@ export function App() {
     return () => { mounted = false; unsubscribe(); };
   }, []);
   useEffect(() => { if (loop) sessionStorage.setItem('loops-active', connectorsActive ? '__connectors__' : automationsActive ? '__automations__' : loop.id); selectRun(requestedRun.current); if (requestedRun.current) { follow.current = false; document.getElementById(requestedRun.current)?.scrollIntoView({ block: 'center' }); requestedRun.current = null; } }, [loop?.id, loop?.revision, automationsActive, connectorsActive]);
-  useEffect(() => { setOpenStep(null); }, [loop?.id, automationsActive, connectorsActive]);
+  useEffect(() => { setOpenStep(null); }, [loop?.id, selectedVersion, automationsActive, connectorsActive]);
+  useEffect(() => { chooseVersion(null); }, [loop.id]);
   useEffect(() => { input.current?.focus(); }, [loop.id, loaded]);
   const eventCount = loop?.runs.reduce((sum, run) => sum + run.events.length, 0) || 0;
   useEffect(() => { if (follow.current) bottom.current?.scrollIntoView({ block: 'end' }); }, [loop?.id, loop?.messages, eventCount, stream]);
   async function send(event) {
-    event.preventDefault(); const text = drafts[loop.id]?.trim(); if (!text || pending || submitting.current) return;
+    event.preventDefault(); const text = drafts[loop.id]?.trim(); if (!text || historical || pending || submitting.current) return;
     submitting.current = true;
     const id = storedLoop?.id, draftId = loop.id;
     setCreating(!id); follow.current = true;
@@ -230,19 +269,38 @@ export function App() {
   if (!loaded) return <div className="startup"><SpinnerGap className="spinning" size={30} /><h1>Loops</h1><p>{error || '正在连接本地工作台…'}</p></div>;
   const feed = loop ? [...loop.messages.map((item) => ({ ...item, kind: 'message', at: item.createdAt })), ...loop.runs.map((run) => ({ ...run, kind: 'run', at: run.startedAt }))].sort((a, b) => a.at.localeCompare(b.at)) : [];
   return <ModelContext.Provider value={{ settings, modelId, setModelId, updateModels: value => setSettings(previous => ({ ...previous, ...value })) }}><ResizablePanels className={cx('app-shell real-client', native && 'native-client')}><LoopNavigation onConnectors={() => setActive('__connectors__')} connectorsActive={connectorsActive} onAutomations={() => { setAutomationSeed(null); setActive('__automations__'); }} automationsActive={automationsActive} loops={loops} activeId={storedLoop?.id} busy={busy} act={act} onNew={() => { setActive('__new__'); setError(''); follow.current = true; input.current?.focus(); }} onSelect={(id) => { setActive(id); follow.current = true; }} onSettings={async () => { setModal({ type: 'settings' }); setSettings(await safe('settings')); }} /><PanelDivider panel="sidebar" />
-    {connectorsActive ? <Connectors /> : automationsActive ? <Automations key={automationSeed || 'all'} initialLoopId={automationSeed} configured={selectedModel?.configured} onLoop={(id, runId) => { requestedRun.current = runId; setActive(id); }} /> : !storedLoop ? <NewLoop input={input} text={drafts.__new__ || ''} onChange={(text) => setDrafts((old) => ({ ...old, __new__: text }))} onSubmit={send} pending={creating} configured={selectedModel?.configured} error={error} onDismissError={() => setError('')} /> : <main className="workspace"><header className={cx('topbar', !loop.definition && 'new-loop-topbar', loop.workdir && 'has-workdir')}><div className="loop-context"><div className="title-line">{loop.workdir ? <DirectoryTitle key={loop.id} loop={loop} home={settings?.homeDirectory} onOpen={() => native ? window.loops.reveal(loop.id) : setModal({ type: 'directory' })} /> : <h1>{loop.title}</h1>}{loop.definition && <span className={cx('save-state', unsaved ? 'unsaved' : 'saved')}>{unsaved ? '未保存' : '已保存'}</span>}</div></div><div className="toolbar-actions">{loop.definition && <><button className="button button-secondary" disabled={!loop.savedRevision} onClick={() => { setAutomationSeed(loop.id); setActive('__automations__'); }}>自动化</button>{activeRun ? <button className="button button-secondary stop-button" onClick={() => safe('stop', { loopId: loop.id, runId: activeRun.id })} disabled={activeRun.status === 'stopping'}><Stop size={18} />停止</button> : <button className={cx('button', unsaved || !loop.definition ? 'button-secondary' : 'button-primary')} disabled={!loop.definition} onClick={() => setModal({ type: 'run' })}><Play size={19} />{unsaved || !loop.definition ? '试跑' : '运行'}</button>}{unsaved && <button className="button button-primary" disabled={!loop.definition} onClick={() => safe('save', { loopId: loop.id })}><FloppyDisk size={19} />保存</button>}</>}</div></header>
+    {connectorsActive ? <Connectors /> : automationsActive ? <Automations key={automationSeed || 'all'} initialLoopId={automationSeed} configured={selectedModel?.configured} onLoop={(id, runId) => { requestedRun.current = runId; setActive(id); }} /> : !storedLoop ? <NewLoop input={input} text={drafts.__new__ || ''} onChange={(text) => setDrafts((old) => ({ ...old, __new__: text }))} onSubmit={send} pending={creating} configured={selectedModel?.configured} error={error} onDismissError={() => setError('')} /> : <main className="workspace"><header className={cx('topbar', !loop.definition && 'new-loop-topbar', loop.workdir && 'has-workdir')}><div className="loop-context"><div className="title-line">{loop.workdir ? <DirectoryTitle key={loop.id} loop={loop} home={settings?.homeDirectory} onOpen={() => native ? window.loops.reveal(loop.id) : setModal({ type: 'directory' })} /> : <h1>{loop.title}</h1>}{loop.definition && <span className={cx('save-state', viewingDraft ? 'unsaved' : 'saved')}>{viewingDraft ? '未保存' : `版本 ${selectedVersion}`}</span>}</div></div><div className="toolbar-actions">{loop.definition && <><button className="button button-secondary" disabled={!loop.savedRevision} onClick={() => { setAutomationSeed(loop.id); setActive('__automations__'); }}>自动化</button>{activeRun ? <button className="button button-secondary stop-button" onClick={() => safe('stop', { loopId: loop.id, runId: activeRun.id })} disabled={activeRun.status === 'stopping'}><Stop size={18} />停止</button> : <button className={cx('button', viewingDraft ? 'button-secondary' : 'button-primary')} disabled={!flowDefinition} onClick={() => setModal({ type: 'run', loop: viewLoop })}><Play size={19} />{viewingDraft ? '试跑' : '运行'}</button>}{viewingDraft && <button className="button button-primary" disabled={!canSave || pending || selectingAgent} title={!canSave ? '当前版本试跑成功后才能保存' : undefined} onClick={() => safe('save', { loopId: loop.id, expectedRevision: loop.revision })}><FloppyDisk size={19} />保存</button>}</>}</div></header>
     {error && <div className="service-error" role="alert"><WarningCircle size={18} /><span>{error}</span><button aria-label="关闭提示" onClick={() => setError('')}><X size={17} /></button></div>}
     <div className="workspace-body"><section className="conversation" aria-label="与 Loops AI 对话"><div className="messages" onScroll={(event) => { const e = event.currentTarget; follow.current = e.scrollHeight - e.scrollTop - e.clientHeight < 100; }}>
     {!feed.length && <div className="message"><Avatar /><div className="message-content"><div className="message-author">Loops AI</div><p className="welcome-copy">描述你希望自动完成的工作。</p>{settings && !selectedModel?.configured && <p className="provider-note">模型尚未配置，需求可以先保留。</p>}</div></div>}
     {feed.map((item) => <div className="message" key={item.id}><Avatar role={item.role} /><div className="message-content">{item.kind !== 'run' && <div className="message-author">{item.role === 'user' ? '你' : 'Loops AI'}<span>{date(item.at)}</span></div>}{item.process ? <ConversationProgress process={item.process} stream={stream[loop.id]} /> : item.kind === 'run' ? <RunCard loop={loop} run={item} artifact={showArtifact} selected={selectedRun === item.id} /> : item.role === 'assistant' ? <div className="markdown-artifact conversation-answer"><Markdown remarkPlugins={[remarkGfm]} skipHtml components={{ img: ({ alt }) => <span>{alt || ''}</span>, a: ({ children, href }) => <span>{children}{href ? ` (${href})` : ''}</span> }}>{item.text}</Markdown></div> : <p className={cx('message-text', item.role === 'error' && 'message-error')}>{item.text}</p>}</div></div>)}
     {pending && !loop.messages.some(m => m.process?.status === 'running') && <div className="message"><Avatar /><div className="message-content"><div className="message-author">Loops AI <SpinnerGap size={17} className="spinning" /></div><p className="message-text">{stream[loop.id] || agentStatus[loop.id] || '正在处理…'}</p></div></div>}<div ref={bottom} /></div>
-    <Composer input={input} text={drafts[loop.id] || ''} onChange={(text) => setDrafts((old) => ({ ...old, [loop.id]: text }))} onSubmit={send} pending={pending} onCancel={() => safe('cancel_chat', { loopId: loop.id })} placeholder={loop.definition ? '反馈哪里需要调整…' : '输入需求…'} rows={loop.definition ? 1 : 2} />
-    </section><PanelDivider panel="inspector" /><aside id="loop-inspector" className="inspector" aria-label="流程与运行记录"><section>{flowDefinition && <div className="section-heading"><h2>流程</h2>{loop.definition && !commandRun && <span className="flow-untried">{loop.revision > 1 ? '修改后未试跑' : '尚未试跑'}</span>}</div>}
-    {flowDefinition && <><ol className="flow-list">{flowDefinition.steps.map((step, index) => <li key={step.id}><button className="flow-step" aria-expanded={openStep === step.id} aria-controls={`step-${step.id}`} onClick={() => setOpenStep(openStep === step.id ? null : step.id)}><span className="step-number">{index + 1}</span><span>{step.label}</span><CaretRight className={cx('step-chevron', openStep === step.id && 'rotate')} size={14} /></button>{openStep === step.id && <StepDetail loop={loop} step={step} clients={agentClients} disabled={pending || selectingAgent} onAgentChange={selection => selectAgent(selection, step.id)} onModelChange={selection => act('step_model_selection', { loopId: loop.id, stepId: step.id, ...selection })} onScript={async (path) => { const file = await safe('script', { loopId: loop.id, path }); if (file) setModal({ type: 'artifact', ...file }); }} />}</li>)}</ol><button className="contract-summary" onClick={() => setModal({ type: 'contract' })}><span>输入和输出</span><CaretRight size={17} /></button></>}
+    {!historical && <Composer input={input} text={drafts[loop.id] || ''} onChange={(text) => setDrafts((old) => ({ ...old, [loop.id]: text }))} onSubmit={send} pending={pending} onCancel={() => safe('cancel_chat', { loopId: loop.id })} placeholder={loop.definition ? '反馈哪里需要调整…' : '输入需求…'} rows={loop.definition ? 1 : 2} />}
+    </section><PanelDivider panel="inspector" /><aside id="loop-inspector" className="inspector" aria-label="流程与运行记录"><section>{loop.definition && <div className="section-heading workflow-heading">
+      <h2>流程</h2>
+      <div className="workflow-version-actions">
+        {historical && <button className="version-rollback" disabled={!selectedSnapshot || pending || selectingAgent} onClick={() => setModal({ type: 'rollback', loop, version: selectedVersion })}>回退</button>}
+        <div className="workflow-version-field">
+          <select className="workflow-version-select" aria-label="流程版本" value={selectedVersion} onChange={event => {
+            setVersionResult(null);
+            chooseVersion({ loopId: loop.id, workingRevision: loop.revision, revision: Number(event.target.value) });
+          }}>
+            {unsaved && <option value={loop.revision}>{canSave ? '未保存草稿' : '草稿 · 待试跑'}</option>}
+            {[...(loop.versions || [])].reverse().map(version => <option key={version.revision} value={version.revision}>版本 {version.revision}</option>)}
+          </select>
+          <CaretDown size={14} aria-hidden="true" />
+        </div>
+      </div>
+    </div>}
+    {historical && !selectedSnapshot && (versionResult?.key === versionKey && versionResult.error
+      ? <p className="form-error" role="alert">{versionResult.error}</p>
+      : <p className="empty-copy">正在读取版本…</p>)}
+    {flowDefinition && <><ol className="flow-list">{flowDefinition.steps.map((step, index) => <li key={step.id}><button className="flow-step" aria-expanded={openStep === step.id} aria-controls={`step-${step.id}`} onClick={() => setOpenStep(openStep === step.id ? null : step.id)}><span className="step-number">{index + 1}</span><span>{step.label}</span><CaretRight className={cx('step-chevron', openStep === step.id && 'rotate')} size={14} /></button>{openStep === step.id && <StepDetail loop={viewLoop} step={step} clients={agentClients} disabled={historical || pending || selectingAgent} onAgentChange={selection => selectAgent(selection, step.id)} onModelChange={selection => act('step_model_selection', { loopId: loop.id, stepId: step.id, ...selection })} onScript={(path) => setModal({ type: 'artifact', title: path, content: flowDefinition.scripts[path] })} />}</li>)}</ol><button className="contract-summary" onClick={() => setModal({ type: 'contract', definition: flowDefinition })}><span>输入和输出</span><CaretRight size={17} /></button></>}
     </section>
-    {!!loop.runs.length && <section className="history-section"><h2>运行记录</h2><div className="run-history">{[...loop.runs].reverse().map((run) => <button key={run.id} className={cx('history-row', run.status, selectedRun === run.id && 'active-history')} onClick={() => { selectRun(run.id); follow.current = false; document.getElementById(run.id)?.scrollIntoView({ block: 'center', behavior: 'smooth' }); }}><span>{run.status === 'success' ? <CheckCircle size={25} weight="fill" /> : activeStatuses.includes(run.status) ? <SpinnerGap size={25} className="spinning" /> : <WarningCircle size={25} />}</span><span><b>{`${runName(run)} · ${statuses[run.status]}`}</b><small>{run.revision !== loop.revision ? '修改前 · ' : ''}{run.input.name}</small></span><CaretRight size={16} /></button>)}</div></section>}</aside></div></main>}
-    {modal?.type === 'run' && <WorkflowInput loop={loop} onClose={() => setModal(null)} act={act} />}
-    {modal?.type === 'contract' && <Dialog title="输入和输出" onClose={() => setModal(null)}><div className="contract-details"><section><h3>输入</h3><p>{flowDefinition.inputs.map((item) => item.label).join('、') || '无需外部输入'}</p></section><section><h3>输出</h3><WorkflowOutputs definition={flowDefinition} /></section></div><div className="dialog-actions artifact-actions"><button className="button button-primary" onClick={() => setModal(null)}>完成</button></div></Dialog>}
+    {!!loop.runs.length && <section className="history-section"><h2>运行记录</h2><div className="run-history">{[...loop.runs].reverse().map((run) => <button key={run.id} className={cx('history-row', run.status, selectedRun === run.id && 'active-history')} onClick={() => { selectRun(run.id); follow.current = false; document.getElementById(run.id)?.scrollIntoView({ block: 'center', behavior: 'smooth' }); }}><span>{run.status === 'success' ? <CheckCircle size={25} weight="fill" /> : activeStatuses.includes(run.status) ? <SpinnerGap size={25} className="spinning" /> : <WarningCircle size={25} />}</span><span><b>{`${runName(run)} · ${statuses[run.status]}`}</b><small>版本 {run.revision}{run.mode === 'trial' ? ' · 草稿' : ''} · {run.input.name}</small></span><CaretRight size={16} /></button>)}</div></section>}</aside></div></main>}
+    {modal?.type === 'rollback' && <RollbackDialog loop={modal.loop} version={modal.version} act={act} onClose={() => setModal(null)} onRestored={() => { chooseVersion(null); setModal(null); }} />}
+    {modal?.type === 'run' && <WorkflowInput loop={modal.loop} onClose={() => setModal(null)} act={act} />}
+    {modal?.type === 'contract' && <Dialog title="输入和输出" onClose={() => setModal(null)}><div className="contract-details"><section><h3>输入</h3><p>{modal.definition.inputs.map((item) => item.label).join('、') || '无需外部输入'}</p></section><section><h3>输出</h3><WorkflowOutputs definition={modal.definition} /></section></div><div className="dialog-actions artifact-actions"><button className="button button-primary" onClick={() => setModal(null)}>完成</button></div></Dialog>}
     {modal?.type === 'directory' && <Dialog title="工作目录" onClose={() => setModal(null)}><div className="contract-details"><p className="resource-path">{loop.workdir}</p></div></Dialog>}
     {modal?.type === 'settings' && <Settings settings={settings} act={act} refresh={async updatedAgent => { if (updatedAgent?.id) { setSettings(previous => ({ ...previous, agents: previous.agents.map(agent => agent.id === updatedAgent.id ? updatedAgent : agent) })); setAgentClients(previous => previous?.map(agent => agent.id === updatedAgent.id ? updatedAgent : agent)); return; } const value = await request('settings'); setSettings(value); setAgentClients(value.agents || []); if (modelId && !value.models.some(item => item.id === modelId)) setModelId(''); }} onClose={() => setModal(null)} />}
     {modal?.type === 'artifact' && <Dialog title={modal.title} onClose={() => setModal(null)}><ArtifactContent content={modal.content} filename={modal.filename} title={modal.title} stepLabels={modal.stepLabels} /><div className="dialog-actions artifact-actions"><button className="button button-primary" onClick={() => setModal(null)}>完成</button></div></Dialog>}

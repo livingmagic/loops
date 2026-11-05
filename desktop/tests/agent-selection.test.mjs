@@ -18,7 +18,6 @@ test('first chat persists execution client independently of builder model; step 
     const definition = { schemaVersion: 2, title: '分析', goal: '生成报告', completion: '文件存在', inputs: [], scripts: {}, finalOutputs: ['${steps.analyze.outputs.report}'],
       steps: [{ id: 'analyze', label: '分析', instructions: '分析资料', inputs: {}, execution: { tool: 'agent', mode: 'read-only', session: 'analysis', responseOutput: 'report' }, outputs: [{ id: 'report', label: '报告', path: 'report.txt' }], checks: [] }] };
     await host.engine.call('definition', { loopId: loop.id, definition });
-    await host.action('save', { loopId: loop.id });
     let changed = await host.action('agent_selection', { loopId: loop.id, stepId: 'analyze', agentId: 'codex' });
     assert.equal(changed.definition.steps[0].execution.agentId, 'codex');
     assert.notEqual(changed.revision, changed.savedRevision);

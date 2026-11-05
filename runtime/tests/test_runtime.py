@@ -60,11 +60,13 @@ class StoreTests(unittest.TestCase):
         self.store.db.close()
         self.temp.cleanup()
 
-    def test_saved_untried_definition_and_executable_survive_reload(self):
+    def test_saved_definition_and_executable_survive_reload(self):
         self.store.update_definition(self.loop['id'], definition())
+        loop = self.store.get(self.loop['id'])
+        loop['runs'].append({'revision': loop['revision'], 'mode': 'trial', 'status': 'success'})
+        self.store.put(loop)
         saved = self.store.save(self.loop['id'])
         self.assertEqual(saved['savedRevision'], 1)
-        self.assertEqual(saved['runs'], [])
         path = Path(saved['versions'][0]['path'])
         self.assertIn('context.run_workflow(DEFINITION)', (path / 'workflow.py').read_text())
         self.assertTrue((path / 'scripts/deliver.py').is_file())
@@ -98,6 +100,9 @@ class StoreTests(unittest.TestCase):
 
     def test_resource_and_input_configurations_are_versioned_without_rewriting_saved_config(self):
         self.store.update_definition(self.loop['id'], definition())
+        loop = self.store.get(self.loop['id'])
+        loop['runs'].append({'revision': loop['revision'], 'mode': 'trial', 'status': 'success'})
+        self.store.put(loop)
         saved = self.store.save(self.loop['id'])
         self.store.configure(self.loop['id'], self.fixture)
         self.assertEqual(self.store.get(self.loop['id'])['revision'], 1)

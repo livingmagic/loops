@@ -49,7 +49,6 @@ for (const repairable of [true, false]) test(`failed real Python run automatical
     const definition = { schemaVersion: 2, title: '恢复测试', goal: '生成报告', completion: '文件存在', inputs: [], scripts: { 'scripts/report.py': 'raise ValueError("test failure")' }, finalOutputs: ['${steps.report.outputs.report}'],
       steps: [{ id: 'report', label: '生成报告', instructions: '生成报告', inputs: {}, execution: { tool: 'python', script: 'scripts/report.py' }, outputs: [{ id: 'report', kind: 'file', label: '报告', path: 'report.txt' }], checks: [], onFailure: { action: 'stop', maxAttempts: 0 } }] };
     await host.engine.call('definition', { loopId: loop.id, definition });
-    await host.action('save', { loopId: loop.id });
     const repaired = structuredClone(definition);
     repaired.scripts['scripts/report.py'] = "import os,json\nfrom pathlib import Path\nc=json.loads(os.environ['LOOPS_CONTEXT'])\nPath(c['outputs']['report']).write_text('verified real Python')";
     let reviews = 0;
@@ -57,7 +56,7 @@ for (const repairable of [true, false]) test(`failed real Python run automatical
       reviews++;
       assert.match(text, /平台运行事件/);
       let index = 0;
-      const names = repairable ? ['get_run_result', 'update_loop', 'save_loop', 'start_trial', 'get_run_result'] : ['get_run_result'];
+      const names = repairable ? ['get_run_result', 'update_loop', 'start_trial', 'get_run_result', 'save_loop'] : ['get_run_result'];
       const job = converse({ engine: host.engine, loopId, text, config, signal: controller.signal, emit() {}, streamFn: (model, context) => {
         assert.match(JSON.stringify(context), /运行失败后先读取真实运行记录/);
         const name = names[index++];

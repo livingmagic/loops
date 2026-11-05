@@ -709,6 +709,18 @@ h1 { margin: 0; font-size: 23px; line-height: 1.35; font-weight: 700; letter-spa
 .auto-summary-flow b { font-weight: 550; line-height: 1.6; overflow-wrap: anywhere; }
 .auto-summary-flow small { display: block; color: var(--muted); margin-top: 5px; font-size: 12px; }
 .auto-summary-flow .auto-link { font-size: 14px; padding: 0; }
+.workflow-heading > h2 { flex-shrink: 0; }
+.workflow-version-actions { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.workflow-version-field { position: relative; width: 144px; min-width: 0; max-width: 100%; }
+.workflow-version-field > svg { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.workflow-version-select { display: block; appearance: none; width: 100%; min-height: 34px; padding: 6px 30px 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: #f6f9fd; color: inherit; font: inherit; font-size: 14px; font-weight: 550; cursor: pointer; }
+.workflow-version-select:hover:not(:disabled) { border-color: #b6cce9; background: #edf4ff; }
+.workflow-version-select:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.version-rollback { color: var(--blue); background: none; border: 0; border-radius: 6px; padding: 6px 9px; font-size: 14px; cursor: pointer; white-space: nowrap; }
+.version-rollback:hover:not(:disabled) { background: #edf4ff; }
+.version-rollback:disabled { opacity: .5; cursor: default; }
+.auto-summary-flow .workflow-version-field { margin-top: 8px; }
+.workflow-version-select:disabled { opacity: .65; cursor: default; }
 .auto-message-text { white-space: normal; }
 .auto-message-text p { margin: 5px 0 10px; }
 .auto-message-text pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }

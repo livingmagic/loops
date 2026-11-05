@@ -114,7 +114,7 @@ class Automations:
                         input_labels[ref[6:]] = field["label"]
             # Legacy manual runs have no collection provenance; do not infer it from equal content.
             origin = run.get("inputOrigin") or {"kind": "snapshot" if run.get("manual") else "collected", "collectedAt": None if run.get("manual") else run["createdAt"]}
-            runs.append({**run, "nodeLabels": labels, "outputLabels": output_labels, "inputLabels": input_labels,
+            runs.append({**run, "nodeLabels": labels, "nodeRevisions": {key: value["revision"] for key, value in version["loops"].items()}, "outputLabels": output_labels, "inputLabels": input_labels,
                          "inputNode": {"label": version["spec"]["source"].get("label") or "获取输入", **origin}})
         return {**task, "runs": runs, "snapshot": self.version(task_id, task["revision"]) if task["revision"] else None}
 
@@ -316,13 +316,12 @@ class Automations:
                 raise ValueError("节点标识必须唯一且有效。")
             ids.add(key)
             loop = self.store.get(node.get("loopId"))
-            revision = node.get("revision") or loop["savedRevision"]
-            version = next((v for v in loop["versions"] if v["revision"] == revision), None)
-            if not version:
+            revision = node.get("revision", loop["savedRevision"])
+            if revision is None:
                 raise ValueError(f"请先保存 Loop「{loop['title']}」。")
-            snapshot = json.loads((Path(version["path"]) / "loop.json").read_text())
-            definition = validate(snapshot["definition"], snapshot["config"])
-            snapshot.update(title=loop["title"], definition=definition)
+            snapshot = self.store.version(loop["id"], revision)
+            definition = snapshot["definition"]
+            snapshot.setdefault("title", definition["title"])
             snapshots[key] = snapshot
             node["revision"] = revision
             bindings = node.get("bindings", {})
@@ -384,6 +383,26 @@ class Automations:
                 raise ValueError(f"{key} 配置超出范围。")
             policy[key] = number
         return value, snapshots
+
+    def set_loop_version(self, task_id, node_id, revision):
+        task = self.task(task_id)
+        if task["enabled"]:
+            raise ValueError("请先暂停自动化任务，再切换 Loop 版本。")
+        if type(revision) is not int or revision < 1:
+            raise ValueError("请选择有效的流程版本。")
+        spec = copy.deepcopy(task.get("draftSpec") or task.get("spec"))
+        node = next((n for n in (spec or {}).get("nodes", []) if n["id"] == node_id), None)
+        if not node:
+            raise ValueError("找不到这个 Loop 节点。")
+        if node.get("revision") == revision:
+            return self.detail(task_id)
+        node["revision"] = revision
+        # Validate the whole chain before changing the draft. This includes
+        # downstream references to outputs removed in the selected version.
+        try:
+            return self.update_draft(task_id, spec)
+        except ValueError as error:
+            raise ValueError(f"无法切换版本：{error} 当前配置已保留；可通过对话调整输入和输出映射。") from error
 
     @staticmethod
     def check_ref(ref, available):
@@ -1146,6 +1165,8 @@ class Automations:
             return self.clear_connection_wait(task_id, params.get('waitId'))
         if method == "automation_update_draft":
             return self.update_draft(task_id, params["spec"])
+        if method == "automation_set_loop_version":
+            return self.set_loop_version(task_id, params.get("nodeId"), params.get("revision"))
         if method == "automation_session_get":
             self.task(task_id)
             return self.store.session(f"automation:{task_id}")
@@ -1158,16 +1179,19 @@ class Automations:
             for loop in self.store.list():
                 versions = []
                 for item in loop["versions"]:
-                    snapshot = json.loads((Path(item["path"]) / "loop.json").read_text())
+                    try:
+                        snapshot = self.store.version(loop["id"], item["revision"])
+                    except ValueError:
+                        continue
                     definition = snapshot["definition"]
                     if definition.get("schemaVersion") != 2 or "finalOutputs" not in definition:
                         continue
                     declared = declared_outputs(definition)
-                    versions.append({"revision": item["revision"], "inputs": definition["inputs"], "outputs": [
+                    versions.append({"revision": item["revision"], "savedAt": item["savedAt"], "title": snapshot.get("title", definition["title"]), "inputs": definition["inputs"], "outputs": [
                         {"key": key, "label": declared[ref]["label"], **({'format': fmt} if (fmt := document_output_format(declared[ref])) else {})}
                         for ref, key in output_keys(definition).items()]})
                 if versions:
-                    catalog.append({"id": loop["id"], "title": loop["title"], "versions": versions})
+                    catalog.append({"id": loop["id"], "title": loop["title"], "savedRevision": loop["savedRevision"], "versions": versions})
             return catalog
         if method == "automation_list":
             runs = self.runs()

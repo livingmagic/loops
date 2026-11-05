@@ -48,10 +48,18 @@ let receiver;
 try {
   open();
   const loops = [];
-  for (const [title, suffix] of [['内容整理', ''], ['报告编写', '\n报告生成完成。']]) {
-    const loop = await host.engine.call('new'); await host.engine.call('definition', { loopId: loop.id, definition: definition(title, suffix) }); loops.push(await host.action('save', { loopId: loop.id }));
-  }
   const source = path.join(root, 'source.txt'); await fs.writeFile(source, '真实输入 alpha 17');
+  for (const [title, suffix] of [['内容整理', ''], ['报告编写', '\n报告生成完成。']]) {
+    const loop = await host.engine.call('new');
+    await host.engine.call('definition', { loopId: loop.id, definition: definition(title, suffix) });
+    await host.action('start', { loopId: loop.id, inputs: { source } });
+    const trial = await waitFor(async () => {
+      const run = (await host.action('list')).find(item => item.id === loop.id).runs.at(-1);
+      return ['success', 'failed', 'stopped', 'interrupted'].includes(run.status) && run;
+    });
+    assert.equal(trial.status, 'success', trial.reason);
+    loops.push(await host.action('save', { loopId: loop.id }));
+  }
   function specFor(title, input) { return { title, source: input, nodes: [{ id: 'prepare', loopId: loops[0].id, revision: 1, bindings: { source: 'input.source' } }, { id: 'report', loopId: loops[1].id, revision: 1, bindings: { source: 'prepare.process.report' } }], outputs: [{ id: 'local', title: '本地报告', config: { directory: path.join(root, 'delivered', title) }, script: outputScript, bindings: { report: 'report.process.report' } }], policy: { queueLimit: 20, scriptTimeout: 10, sourceRestarts: 0 } }; }
   const once = sourceTemplate('once'); once.config.path = source;
   let task = await host.action('automation_save', { spec: specFor('单次采集', once) });
