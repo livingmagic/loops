@@ -77,11 +77,13 @@ def validate(value, config):
         tool = execution.get("tool")
         if tool not in TOOLS:
             raise ValueError("当前可使用 Agent、Python、命令行或 MCP 执行步骤。")
+        if 'cwd' in execution and (not isinstance(execution['cwd'], str) or not execution['cwd'].strip() or '\0' in execution['cwd']):
+            raise ValueError('工作目录需要有效的路径；使用默认目录时请省略 cwd。')
         if tool == 'mcp':
             if (not isinstance(execution.get('connectorId'), str) or not IDENTIFIER.fullmatch(execution['connectorId'])
                     or not isinstance(execution.get('operation'), str) or not execution['operation']
                     or '${' in execution['operation'] or not isinstance(execution.get('arguments'), dict)):
-                raise ValueError('MCP 步骤需要固定的连接器、操作名称和参数对象。')
+                raise ValueError('MCP 步骤需要固定的插件、操作名称和参数对象。')
             if 'forEach' in execution and (not isinstance(execution['forEach'], str) or not REFERENCE.fullmatch(execution['forEach'])):
                 raise ValueError('forEach 必须完整引用前序步骤的列表数据。')
         if 'forEach' in execution:

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 const labels = {
+  list_plugins:'查看插件', read_connector_skill:'读取插件用法',
   inspect_project:'查看项目与执行能力', list_connectors:'发现已连接的工具', list_connector_operations:'查找可用操作',
   inspect_connector_operation:'查看工具契约', preview_connector_operation:'预览工具返回', review_connector_operation:'检查操作影响',
   update_loop:'更新流程', save_loop:'保存流程', start_trial:'启动试跑', get_run_result:'检查运行结果',

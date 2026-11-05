@@ -8,9 +8,10 @@ from ...environment import command_environment
 
 
 class MimoSession:
-    def __init__(self, cwd, emit, *, binary, read_paths=(), model=None, reasoning=None):
+    def __init__(self, cwd, emit, *, binary, read_paths=(), write_paths=(), model=None, reasoning=None):
         self.cwd, self.emit, self.binary = str(cwd), emit, binary
         self.read_paths = [Path(path).resolve() for path in read_paths]
+        self.write_paths = [Path(path).resolve() for path in write_paths]
         self.model, self.reasoning = model, reasoning
         self.session_id = None
         self.process = None
@@ -40,6 +41,9 @@ class MimoSession:
         # Deny unlisted tools in read-only mode, including shell, MCP and subagents.
         # These are native tool restrictions, not an OS filesystem sandbox.
         external, reads, edits = {'*': 'deny'}, {'*': 'allow'}, {}
+        if not readonly:
+            for path in self.write_paths:
+                external[str(path / '*')] = 'allow'
         for path in self.read_paths:
             directory = path if path.is_dir() else path.parent
             external[str(directory / '*')] = 'allow'

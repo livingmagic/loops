@@ -11,8 +11,6 @@ async def bind_connectors(definition, connectors):
         if execution['tool'] != 'mcp':
             continue
         key = execution['connectorId']
-        if connectors.entry(key)['manifest']['type'] != 'mcp':
-            raise ValueError('MCP 步骤需要选择 MCP 连接器。')
         grants.setdefault(key, set()).add(execution['operation'])
     if not grants:
         return value

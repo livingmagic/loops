@@ -223,14 +223,16 @@ class Workflow:
         execution = self.resolve({k: v for k, v in raw_execution.items() if k != template_field})
         if 'arguments' in raw_execution and 'forEach' not in raw_execution:
             execution['arguments'] = self.resolve(raw_execution['arguments'])
-        cwd = self.local_path(execution.get("cwd", self.workspace))
+        directory = execution.get('cwd', str(self.workspace))
+        candidate = Path(directory).expanduser()
+        cwd = candidate.resolve() if execution['tool'] in {'agent', 'codex'} and candidate.is_absolute() else self.local_path(directory)
         if not cwd.is_dir():
-            raise ValueError("步骤工作目录不存在。")
+            raise ValueError(f"步骤工作目录不存在或不是文件夹：{cwd}")
         outputs = {item["id"]: str(self.local_path(self.resolve(item["path"]))) for item in step.get("outputs", []) if item.get('kind', 'file') in {'file', 'json'}}
         for path in outputs.values():
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         arguments = self.resolve(step.get("inputs", {}))
-        context = {"inputs": arguments, "outputs": outputs, "workspace": str(self.workspace), "bundle": str(self.directory),
+        context = {"inputs": arguments, "outputs": outputs, "workspace": str(self.workspace), "workingDirectory": str(cwd), "bundle": str(self.directory),
                    "scripts": {name: str(self.directory / name) for name in self.c.run['definition'].get('scripts', {})},
                    "resources": self.values["resources"], "failure": self.values["failure"], "checks": self.values["checks"]}
         env = command_environment()
@@ -313,7 +315,8 @@ class Workflow:
                     self.c.emit(kind, text, **{**extra, 'agentId': agent_id, 'sessionKey': json.dumps(session_key)})
                 session = (self.c.session_factory(cwd, emit) if self.c.session_factory else
                            self.c.agent_clients.session(binding, cwd, emit,
-                               read_paths=[self.directory / 'inputs', self.directory / 'scripts', *(item['path'] for item in resources(self.c.run['config']) if item['kind'] != 'model')]))
+                               **({'write_paths': [self.workspace]} if execution.get('mode', 'write') == 'write' and not self.workspace.resolve().is_relative_to(cwd) else {}),
+                               read_paths=[self.directory / 'inputs', self.directory / 'scripts', *([self.workspace] if execution.get('mode') == 'read-only' else []), *(item['path'] for item in resources(self.c.run['config']) if item['kind'] != 'model')]))
                 self.sessions[session_key] = await stack.enter_async_context(session)
             delivery = ('请在最终回复中直接返回产出正文，平台负责保存为指定产出文件。不要尝试写入文件，也不要用完成说明代替正文。'
                         if execution.get('responseOutput') else '按约定将产出写入指定路径。')

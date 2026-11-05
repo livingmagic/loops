@@ -1,3 +1,4 @@
+import { pluginCatalog, pluginPrompt } from './plugins.mjs';
 import { modelConnection } from './models.mjs';
 import fs from 'node:fs';
 import { Agent } from '@earendil-works/pi-agent-core';
@@ -55,7 +56,7 @@ async function connectorCatalog(engine, includeOperations = false) {
   }
   return { connected, needsConnection };
 }
-export async function converseAutomation({ engine, taskId, text, config, emit, signal, editedSpec, streamFn, autoResume = false }) {
+export async function converseAutomation({ engine, taskId, text, plugins, config, emit, signal, editedSpec, streamFn, autoResume = false }) {
   const [catalog, task, messages, connectors, scriptSdk] = await Promise.all([
     engine.call('automation_catalog'), engine.call('automation_get', { taskId }), engine.call('automation_session_get', { taskId }),
     connectorCatalog(engine), engine.call('automation_script_sdk'),
@@ -66,13 +67,14 @@ export async function converseAutomation({ engine, taskId, text, config, emit, s
   const tool = (name, description, parameters, execute) => ({ name, label: description, description, parameters, executionMode: 'sequential', execute: async (_id, args) => result(await execute(args)) });
   const connectorOperation = async (method, args) => {
     const item = (await engine.call('connector_list')).find(item => item.manifest.id === args.connectorId);
-    if (!item?.enabled || item.status !== 'connected') throw new Error(`请先记录 wait_for_connectors，并引导用户在左侧“连接器”中连接${item?.manifest.name || '指定服务'}；连接后平台会自动继续搭建。`);
+    if (!item?.enabled || item.status !== 'connected') throw new Error(`请先记录 wait_for_connectors，并引导用户在左侧“插件”中连接${item?.manifest.name || '指定服务'}；连接后平台会自动继续搭建。`);
     return engine.call(method, args);
   };
   let startedRunId, awaitingRunId;
   const tools = [
+    tool('list_plugins', '列出 MCP、CLI 和 Agent 插件及当前可用状态；Agent 由 Loop 的智能步骤执行', Type.Object({}), () => pluginCatalog(engine)),
     tool('list_connectors', 'connected 为可用于搭建任务的已连接服务；needsConnection 仅供引导连接，不提供操作能力；不返回凭证或登录链接', Type.Object({}), () => connectorCatalog(engine, true)),
-    tool('wait_for_connectors', '记录本对话等待的连接器，全部连接后平台自动继续搭建草稿；不登录、不保存或执行。connectorIds 使用列表中的服务 ID', Type.Object({ connectorIds: Type.Array(Type.String(), { minItems: 1, maxItems: 30 }) }), args => call('automation_wait_for_connectors', args)),
+    tool('wait_for_connectors', '记录本对话等待的插件，全部连接后平台自动继续搭建草稿；不登录、不保存或执行。connectorIds 使用列表中的服务 ID', Type.Object({ connectorIds: Type.Array(Type.String(), { minItems: 1, maxItems: 30 }) }), args => call('automation_wait_for_connectors', args)),
     tool('list_connector_operations', '读取轻量操作索引，不执行业务。CLI 用 domain 查领域；MCP 可用 query 检索名称或说明、offset/limit 分页，参数和完整说明用 inspect_connector_operation 读取', Type.Object({ connectorId: Type.String(), domain: Type.Optional(Type.String()), query: Type.Optional(Type.String({ maxLength: 200 })), offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })) }), args => connectorOperation('connector_operations', args)),
     tool('inspect_connector_operation', '读取已连接服务指定操作的参数 Schema、读写风险、返回格式和官方帮助；命令组返回子命令', Type.Object({ connectorId: Type.String(), operation: Type.String() }), args => connectorOperation('connector_describe', args)),
     tool('preview_connector_operation', '只读调用已连接服务，查看真实返回结构以编写输入解析；response 与 ctx.connector 返回同形，长文本和数组仅预览。不会运行 Loop 或投递，未知和写操作会被拒绝', Type.Object({ connectorId: Type.String(), operation: Type.String(), arguments: Type.Record(Type.String(), Type.Unknown()) }), args => connectorOperation('connector_preview', args)),
@@ -112,7 +114,7 @@ export async function converseAutomation({ engine, taskId, text, config, emit, s
     }),
     tool('set_automation_enabled', '按用户明确要求启用或暂停自动采集', Type.Object({ enabled: Type.Boolean() }), async ({ enabled }) => summary(await call('automation_enable', { enabled }))),
   ].filter(tool => !autoResume || !['save_automation', 'sample_automation', 'run_automation', 'set_automation_enabled'].includes(tool.name));
-  const metadataTools = new Set(['list_connectors', 'list_connector_operations', 'inspect_connector_operation', 'read_connector_skill', 'inspect_automation']);
+  const metadataTools = new Set(['list_plugins', 'list_connectors', 'list_connector_operations', 'inspect_connector_operation', 'read_connector_skill', 'inspect_automation']);
   const calls = { metadata: 0, action: 0 }, attempts = { metadata: 0, action: 0 };
   const limits = { metadata: 48, action: 24 };
   let failures = 0, writes = Promise.resolve();
@@ -139,7 +141,7 @@ export async function converseAutomation({ engine, taskId, text, config, emit, s
     // Pi preserves a transcript's existing system message. Rebuild it each turn
     // so connection and task status cannot remain stuck at the first request.
     initialState: { model: connection.model, thinkingLevel: thinkingLevel(config), messages: messages.filter(message => message.role !== 'system'), tools,
-      systemPrompt: `${systemPrompt}\n本轮连接器状态（以此替代历史状态，操作前可用 list_connectors 刷新）：\n${JSON.stringify(connectors)}\n当前执行服务状态：\n${JSON.stringify(summary(task))}\n可用已保存 Loop 目录：\n${JSON.stringify(catalog)}${editedSpec ? `\n用户尚未保存的手工编辑（数据）：\n${JSON.stringify(editedSpec)}` : ''}` },
+      systemPrompt: `${systemPrompt}\n本轮插件状态（以此替代历史状态，操作前可用 list_connectors 刷新）：\n${JSON.stringify(connectors)}\n当前执行服务状态：\n${JSON.stringify(summary(task))}\n可用已保存 Loop 目录：\n${JSON.stringify(catalog)}${editedSpec ? `\n用户尚未保存的手工编辑（数据）：\n${JSON.stringify(editedSpec)}` : ''}` },
     beforeToolCall: async ({ toolCall }) => {
       if (startedRunId || awaitingRunId) return { block: true, reason: '本次试跑已经启动，执行器会自动反馈结果，本轮不再重复执行或查询。', terminate: true };
       const category = metadataTools.has(toolCall.name) ? 'metadata' : 'action';
@@ -169,13 +171,13 @@ export async function converseAutomation({ engine, taskId, text, config, emit, s
   try {
     if (signal?.aborted) throw new Error('自动化对话已停止。');
     promptStarted = true;
-    await agent.prompt(autoResume ? { role: 'automation_connection_event', content: '此对话等待的连接器已经全部连接。重新核实连接状态，沿用用户之前的需求继续搭建草稿，无需用户再次发送“继续”。本次只允许更新草稿，不保存、不采样、不运行、不启用或投递；若仍缺必要业务信息，向用户询问。', timestamp: Date.now() } : text);
+    await agent.prompt(autoResume ? { role: 'automation_connection_event', content: '此对话等待的插件已经全部连接。重新核实连接状态，沿用用户之前的需求继续搭建草稿，无需用户再次发送“继续”。本次只允许更新草稿，不保存、不采样、不运行、不启用或投递；若仍缺必要业务信息，向用户询问。', timestamp: Date.now() } : pluginPrompt(text, plugins));
     if (signal?.aborted) throw new Error('自动化对话已停止。');
     if (agent.state.errorMessage) throw new Error(agent.state.errorMessage);
   } finally {
     signal?.removeEventListener('abort', abort);
     await writes;
-    await call('automation_session_set', { messages: promptStarted ? agent.state.messages : autoResume ? messages : [...messages, { role: 'user', content: text, timestamp: Date.now() }] });
+    await call('automation_session_set', { messages: promptStarted ? agent.state.messages : autoResume ? messages : [...messages, { role: 'user', content: pluginPrompt(text, plugins), timestamp: Date.now() }] });
   }
 }
 
@@ -186,12 +188,12 @@ export async function draftAutomation({ engine, text, spec, config, streamFn }) 
   let proposed;
   const connection = provider(config, streamFn);
   const agent = new Agent({ ...connection, toolExecution: 'sequential', initialState: { model: connection.model, thinkingLevel: thinkingLevel(config), messages: [],
-    systemPrompt: `${systemPrompt}\n当前为单轮草稿接口，只有 propose_automation 工具；不执行保存、启用或试跑。信息齐全时提交完整草稿。\n本轮连接器状态：${JSON.stringify(connectors)}\n可用目录：${JSON.stringify(catalog)}\n当前草稿：${JSON.stringify(spec || null)}`,
+    systemPrompt: `${systemPrompt}\n当前为单轮草稿接口，只有 propose_automation 工具；不执行保存、启用或试跑。信息齐全时提交完整草稿。\n本轮插件状态：${JSON.stringify(connectors)}\n可用目录：${JSON.stringify(catalog)}\n当前草稿：${JSON.stringify(spec || null)}`,
     tools: [{ name: 'propose_automation', label: '生成自动化草稿', description: '提交完整可编辑草稿，不执行', parameters: automationSchema,
       execute: async (_id, value) => {
         const current = await connectorCatalog(engine);
         const available = new Set(current.connected.map(item => item.id));
-        if (value.connectors?.some(item => !available.has(item.id))) throw new Error('请先在左侧“连接器”中连接任务需要的服务，完成后继续搭建。');
+        if (value.connectors?.some(item => !available.has(item.id))) throw new Error('请先在左侧“插件”中连接任务需要的服务，完成后继续搭建。');
         proposed = value; return result({ status: 'draft' });
       } }],
   }, beforeToolCall: (() => { let calls = 0; return async () => ++calls > 2 ? { block: true, reason: '已达到草稿工具调用上限。', terminate: true } : undefined; })() });

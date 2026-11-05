@@ -1,9 +1,5 @@
 # Loops 项目约定
 
-用通俗易懂的中文输出最终结果，出现问题时要解释清楚。
-
-Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.
-
 本文件所在目录是项目根目录，用于整个 Loops 项目。
 
 - 公开源码包含 `desktop/` 正式客户端与 `runtime/` 本地执行层。
@@ -18,6 +14,10 @@ Avoid unnecessary secondary labels and descriptions. Let the layout do the expla
 - 长期维护的自动测试放在 `tests/`，开发、构建和发布工具放在 `scripts/`。临时检查只有需要持续防止问题复发时，才整理为正式测试。
 - `design/` 默认保留采用的设计源稿与参考图；未采用方案放入 `drafts/`，临时导出放入 `exports/`。应用运行和构建所需的正式图片、图标继续保存在 `public/`、`assets/` 并提交。
 - 新增测试或设计沿用以上目录约定，不在 `.gitignore` 中按日期、版本或文件名维护白名单。本机凭证、Loop 数据和构建产物继续忽略，不因临时验收而迁移或删除。
+
+## 插件原则
+
+- 一切皆插件，但插件的配置要尽可能简单。MCP 服务、CLI 工具和 Agent 在“插件”页面统一配置，并可通过对话输入框的 `/` 选择；选择使用类型和唯一 ID 绑定真实能力。
 
 ## 正式客户端
 

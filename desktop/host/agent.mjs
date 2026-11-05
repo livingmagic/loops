@@ -1,3 +1,4 @@
+import { pluginCatalog, pluginPrompt } from './plugins.mjs';
 import { modelConnection } from './models.mjs';
 import fs from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -53,12 +54,15 @@ export function builderTools(engine, loopId, signal) {
   return [
     tool('list_models', '查看已配置的模型 API 资源及支持的思考强度；不返回密钥', Type.Object({}), () => engine.call('model_catalog')),
     tool('add_model_resource', '将已配置的 API 模型登记为本流程资源，返回 resourceId 所需的 id 及支持的思考强度', Type.Object({ modelId: Type.String({ description: 'list_models 返回的模型配置 id，不是供应商的模型名称。' }) }), args => engine.call('add_model_resource', { loopId, ...args })),
-    tool('list_connectors', '发现用户添加的 MCP 服务；只返回连接状态和能力简介，不执行业务操作', Type.Object({}), async () => (await engine.call('connector_list')).filter(item => item.manifest.type === 'mcp').map(({ manifest, enabled, status, tools }) => ({ id: manifest.id, name: manifest.name, description: manifest.description, enabled, status, operationCount: tools?.length || 0 }))),
-    tool('list_connector_operations', '查询 MCP 操作索引；按任务检索，完整参数用 inspect_connector_operation 查看', Type.Object({ connectorId: Type.String(), query: Type.Optional(Type.String()), offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })) }), args => engine.call('connector_operations', args)),
-    tool('inspect_connector_operation', '读取 MCP 操作参数、返回格式和读写影响，不执行业务操作', Type.Object({ connectorId: Type.String(), operation: Type.String() }), args => engine.call('connector_describe', args)),
-    tool('preview_connector_operation', '只读预览 MCP 的真实返回，不能执行写操作；返回形状与流程 MCP 步骤相同', Type.Object({ connectorId: Type.String(), operation: Type.String(), arguments: Type.Record(Type.String(), Type.Unknown()) }), args => engine.call('connector_preview', args)),
+    tool('list_plugins', '列出 MCP、CLI 和 Agent 插件及当前可用状态，不执行操作', Type.Object({}), () => pluginCatalog(engine)),
+    tool('list_connectors', '发现用户添加的 MCP 与 CLI 插件；只返回连接状态和能力简介，不执行业务操作', Type.Object({}), async () => (await engine.call('connector_list')).map(({ manifest, enabled, status, tools, capabilities }) => ({ id: manifest.id, name: manifest.name, type: manifest.type, capabilities, description: manifest.description, enabled, status, operationCount: tools?.length || 0 }))),
+    tool('list_connector_operations', '查询 MCP 与 CLI 操作索引；CLI 可按 domain 查看领域，MCP 按任务检索，完整参数用 inspect_connector_operation 查看', Type.Object({ connectorId: Type.String(), domain: Type.Optional(Type.String()), query: Type.Optional(Type.String()), offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })) }), args => engine.call('connector_operations', args)),
+    tool('inspect_connector_operation', '读取 插件操作参数、返回格式和读写影响，不执行业务操作', Type.Object({ connectorId: Type.String(), operation: Type.String() }), args => engine.call('connector_describe', args)),
+    tool('preview_connector_operation', '只读预览 MCP 或 CLI 插件的真实返回，不能执行写操作；返回形状与流程 MCP 步骤相同', Type.Object({ connectorId: Type.String(), operation: Type.String(), arguments: Type.Record(Type.String(), Type.Unknown()) }), args => engine.call('connector_preview', args)),
     tool('review_connector_operation', '根据已查看的完整 Schema 与说明评估未知操作的读写影响，保存依据，不执行或授予权限', Type.Object({ connectorId: Type.String(), operation: Type.String(), risk: Type.Union([Type.Literal('read'), Type.Literal('write'), Type.Literal('high-risk-write')]), evidence: Type.String() }), args => engine.call('connector_review_operation', args)),
+    tool('read_connector_skill', '按操作索引读取 CLI 插件的内置用法与参考文档', Type.Object({ connectorId: Type.String(), path: Type.String() }), args => engine.call('connector_skill', args)),
     tool('set_execution_model', '按用户明确要求指定模型与思考强度；stepId 指定单步，否则 agentId 指定本流程该 Agent 的模型；model=null 恢复继承', Type.Object({ model: Type.Union([Type.String(), Type.Null()]), reasoning: Type.Optional(Type.Union([Type.String(), Type.Null()], { description: '指定思考强度；null 恢复继承。' })), agentId: Type.Optional(Type.String()), stepId: Type.Optional(Type.String()) }), args => engine.call('agent_model_selection', { loopId, ...args })),
+    tool('set_agent_directory', '按用户要求修改 Agent 节点的工作目录。cwd 为已有目录的绝对路径，null 恢复本次工作区。', Type.Object({ stepId: Type.String(), cwd: Type.Union([Type.String(), Type.Null()]) }), args => engine.call('agent_directory', { loopId, ...args })),
     tool('set_execution_agent', '根据任务与可用能力选择流程默认执行 Agent，或为单个智能步骤选择 Agent；步骤 agentId=null 恢复继承', Type.Object({ agentId: Type.Union([Type.String(), Type.Null()]), stepId: Type.Optional(Type.String()) }), args => engine.call('agent_selection', { loopId, ...args })),
     tool('inspect_project', '读取已选资料、文件清单、可用执行能力及当前流程配置', Type.Object({}), () => engine.call('inspect', { loopId })),
     tool('read_project_file', '读取已选资料目录内的普通文件', Type.Object({ path: Type.String(), resourceId: Type.Optional(Type.String()) }), (args) => engine.call('read_project', { loopId, ...args })),
@@ -81,7 +85,7 @@ export function builderTools(engine, loopId, signal) {
   ];
 }
 
-export async function converse({ engine, loopId, text, config, emit, signal, streamFn, recordModelTrace }) {
+export async function converse({ engine, loopId, text, plugins, config, emit, signal, streamFn, recordModelTrace }) {
   const { collection: modelCollection, model } = modelConnection(config);
   const loops = await engine.call('list');
   const current = loops.find((loop) => loop.id === loopId);
@@ -120,7 +124,7 @@ export async function converse({ engine, loopId, text, config, emit, signal, str
   });
   try {
     if (signal?.aborted) throw new Error('cancelled');
-    await agent.prompt(text);
+    await agent.prompt(pluginPrompt(text, plugins));
     if (agent.state.errorMessage) throw new Error(agent.state.errorMessage);
     succeeded = !limitReached;
     if (limitReached && !finalText) finalText = '本轮处理已达到上限，尚未完成验收。已保留流程和运行记录，可以继续处理。';

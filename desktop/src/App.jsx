@@ -1,4 +1,7 @@
 import { StepModelSettings } from './StepModelSettings';
+import { workflowPaths, shortPathText } from './workflow-paths.js';
+import { StepDirectory } from './StepDirectory.jsx';
+import { PluginsIcon } from './PluginIcon.jsx';
 import { ConversationProgress } from './ConversationProgress.jsx';
 import { StepAgentSettings } from './StepAgentSettings.jsx';
 import { Settings } from './Settings.jsx';
@@ -15,7 +18,8 @@ import { NewLoop } from './NewLoop.jsx';
 import { Composer } from './Composer.jsx';
 import { Automations } from './Automations.jsx';
 import { Avatar } from './Avatar.jsx';
-import { Connectors } from './Connectors.jsx';
+import { Plugins } from './Plugins.jsx';
+import { PluginProvider, PluginMessage } from './PluginContext.jsx';
 
 const activeStatuses = ['queued', 'running', 'correcting', 'stopping'];
 const statuses = { queued: '准备中', running: '运行中', correcting: '自动纠正中', stopping: '停止中', stopped: '已停止', interrupted: '已中断', failed: '失败', success: '完成' };
@@ -57,7 +61,7 @@ function DeleteLoopDialog({ item, act, onClose }) {
   return <Dialog title="删除 Loop" onClose={onClose}><div className="contract-details"><p>删除「{item.title}」？可在回收站恢复。</p>{error && <p className="form-error" role="alert">{error}</p>}</div><div className="dialog-actions artifact-actions"><button className="button button-secondary" onClick={onClose}>取消</button><button className="button button-danger" disabled={working} onClick={async () => { setWorking(true); try { await act('delete', { loopId: item.id }); onClose(); } catch (error) { setError(error.message); setWorking(false); } }}>{working ? '正在删除…' : '删除'}</button></div></Dialog>;
 }
 
-function LoopNavigation({ loops, activeId, busy, onSelect, onNew, onSettings, act, onAutomations, automationsActive, onConnectors, connectorsActive }) {
+function LoopNavigation({ loops, activeId, busy, onSelect, onNew, onSettings, act, onAutomations, automationsActive, onPlugins, pluginsActive }) {
   const [menu, setMenu] = useState(null), [dialog, setDialog] = useState(null);
   useEffect(() => {
     if (!menu) return;
@@ -68,7 +72,7 @@ function LoopNavigation({ loops, activeId, busy, onSelect, onNew, onSettings, ac
     window.addEventListener('resize', moved); window.addEventListener('scroll', moved, true);
     return () => { document.removeEventListener('mousedown', dismiss); document.removeEventListener('keydown', key); window.removeEventListener('resize', moved); window.removeEventListener('scroll', moved, true); };
   }, [menu]);
-  return <><aside id="loop-navigation" className="sidebar" aria-label="Loop 导航"><div className="traffic-lights" aria-hidden="true"><Circle weight="fill" /><Circle weight="fill" /><Circle weight="fill" /></div><div className="wordmark">Loops</div><button className="new-loop button-primary" onClick={onNew}><Plus size={21} />新建 Loop</button><button className={`loop-item automation-entry ${automationsActive ? 'active' : ''}`} aria-current={automationsActive ? 'page' : undefined} onClick={onAutomations}><ArrowCounterClockwise size={21} /><span>自动化任务</span></button><nav className="loop-list" aria-label="我的 Loops">{loops.map((item) => <div className={cx('loop-row', item.id === activeId && 'active')} key={item.id}><button className="loop-item" onClick={() => { setMenu(null); onSelect(item.id); }} aria-current={item.id === activeId ? 'page' : undefined}><FileText size={21} /><span>{item.title}</span>{item.runs.some((run) => activeStatuses.includes(run.status)) && <SpinnerGap size={16} className="spinning" />}</button><button id={`loop-more-${item.id}`} className="icon-button loop-more" data-loop-menu aria-label={`更多操作：${item.title}`} aria-haspopup="menu" aria-expanded={menu?.item.id === item.id} onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setMenu(menu?.item.id === item.id ? null : { item, left: Math.min(bounds.left, window.innerWidth - 170), top: Math.min(bounds.bottom + 4, window.innerHeight - 60) }); }}><DotsThree size={24} weight="bold" /></button></div>)}</nav><div className="sidebar-footer"><button className={`settings-entry ${connectorsActive ? 'active' : ''}`} aria-current={connectorsActive ? 'page' : undefined} onClick={onConnectors}><Link size={20} />连接器</button><button className="settings-entry" onClick={onSettings}><Gear size={20} />设置</button></div></aside>{menu && <div className="loop-menu" data-loop-menu role="menu" aria-label={`${menu.item.title}的操作`} style={{ left: menu.left, top: menu.top }}><button role="menuitem" ref={(element) => element?.focus()} onClick={() => { setDialog({ type: 'rename', item: menu.item }); setMenu(null); }}>重命名</button><button role="menuitem" className="delete-menu-item" disabled={busy[menu.item.id] || menu.item.runs.some((run) => activeStatuses.includes(run.status))} title={busy[menu.item.id] ? '请等 Loops AI 回复结束' : menu.item.runs.some((run) => activeStatuses.includes(run.status)) ? '请先停止运行' : undefined} onClick={() => { setDialog({ type: 'delete', item: menu.item }); setMenu(null); }}><Trash size={18} />删除</button></div>}{dialog?.type === 'rename' && <RenameLoopDialog item={dialog.item} act={act} onClose={() => setDialog(null)} />}{dialog?.type === 'delete' && <DeleteLoopDialog item={dialog.item} act={act} onClose={() => setDialog(null)} />}</>;
+  return <><aside id="loop-navigation" className="sidebar" aria-label="Loop 导航"><div className="traffic-lights" aria-hidden="true"><Circle weight="fill" /><Circle weight="fill" /><Circle weight="fill" /></div><div className="wordmark">Loops</div><button className="new-loop button-primary" onClick={onNew}><Plus size={21} />新建 Loop</button><button className={`loop-item automation-entry ${automationsActive ? 'active' : ''}`} aria-current={automationsActive ? 'page' : undefined} onClick={onAutomations}><ArrowCounterClockwise size={21} /><span>自动化任务</span></button><nav className="loop-list" aria-label="我的 Loops">{loops.map((item) => <div className={cx('loop-row', item.id === activeId && 'active')} key={item.id}><button className="loop-item" onClick={() => { setMenu(null); onSelect(item.id); }} aria-current={item.id === activeId ? 'page' : undefined}><FileText size={21} /><span>{item.title}</span>{item.runs.some((run) => activeStatuses.includes(run.status)) && <SpinnerGap size={16} className="spinning" />}</button><button id={`loop-more-${item.id}`} className="icon-button loop-more" data-loop-menu aria-label={`更多操作：${item.title}`} aria-haspopup="menu" aria-expanded={menu?.item.id === item.id} onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setMenu(menu?.item.id === item.id ? null : { item, left: Math.min(bounds.left, window.innerWidth - 170), top: Math.min(bounds.bottom + 4, window.innerHeight - 60) }); }}><DotsThree size={24} weight="bold" /></button></div>)}</nav><div className="sidebar-footer"><button className={`settings-entry ${pluginsActive ? 'active' : ''}`} aria-current={pluginsActive ? 'page' : undefined} onClick={onPlugins}><PluginsIcon size={20} />插件</button><button className="settings-entry" onClick={onSettings}><Gear size={20} />设置</button></div></aside>{menu && <div className="loop-menu" data-loop-menu role="menu" aria-label={`${menu.item.title}的操作`} style={{ left: menu.left, top: menu.top }}><button role="menuitem" ref={(element) => element?.focus()} onClick={() => { setDialog({ type: 'rename', item: menu.item }); setMenu(null); }}>重命名</button><button role="menuitem" className="delete-menu-item" disabled={busy[menu.item.id] || menu.item.runs.some((run) => activeStatuses.includes(run.status))} title={busy[menu.item.id] ? '请等 Loops AI 回复结束' : menu.item.runs.some((run) => activeStatuses.includes(run.status)) ? '请先停止运行' : undefined} onClick={() => { setDialog({ type: 'delete', item: menu.item }); setMenu(null); }}><Trash size={18} />删除</button></div>}{dialog?.type === 'rename' && <RenameLoopDialog item={dialog.item} act={act} onClose={() => setDialog(null)} />}{dialog?.type === 'delete' && <DeleteLoopDialog item={dialog.item} act={act} onClose={() => setDialog(null)} />}</>;
 }
 
 function RunCard({ loop, run, artifact, selected }) {
@@ -89,19 +93,7 @@ function RunCard({ loop, run, artifact, selected }) {
   </div></div>;
 }
 
-const toolLabels = { agent: 'Agent', codex: 'Codex', python: 'Python', command: '命令行', mcp: 'MCP' };
-const resourceList = (config) => config.resources;
-function referenceLabel(value, definition, config) {
-  if (typeof value !== 'string') return JSON.stringify(value);
-  return value.replace(/\$\{([^}]+)\}/g, (original, ref) => {
-    const [kind, id, , output] = ref.split('.');
-    if (kind === 'workspace') return '本次工作区';
-    if (kind === 'inputs') return `本次输入 · ${definition.inputs?.find((item) => item.id === id)?.label || id}`;
-    if (kind === 'resources') return resourceList(config).find((item) => item.id === id)?.label || id;
-    if (kind === 'steps') { const step = definition.steps.find((item) => item.id === id); return `${step?.label || id} · ${step?.outputs?.find((item) => item.id === output)?.label || output}`; }
-    return { failure: '上次失败信息', checks: '实际检查记录' }[ref] || original;
-  });
-}
+const toolLabels = { agent: 'Agent', codex: 'Codex', python: 'Python', command: '命令行', mcp: '插件' };
 function WorkflowInput({ loop, onClose, act }) {
   const [values, setValues] = useState(Object.fromEntries(loop.definition.inputs.map((item) => [item.id, loop.config.inputDefaults[item.id] || ''])));
   const [error, setError] = useState(''), [busy, setBusy] = useState(false);
@@ -134,23 +126,26 @@ function RollbackDialog({ loop, version, act, onClose, onRestored }) {
   </Dialog>;
 }
 
-function StepDetail({ loop, step, onScript, clients, onAgentChange, onModelChange, disabled }) {
+function StepDetail({ loop, step, home, selectedRun, onDirectoryChange, onScript, clients, onAgentChange, onModelChange, disabled }) {
   const execution = step.execution;
-  const show = (value) => referenceLabel(value, loop.definition, loop.config);
+  const paths = workflowPaths(loop, selectedRun);
+  const show = (value, file = false) => { const full = paths.resolve(value, file); return <span className="workflow-path" title={shortPathText(full, home)}>{shortPathText(full, home)}</span>; };
+  const commandText = values => show(values.map(value => paths.resolve(value)).join(' '));
   const failure = step.onFailure;
   const executionDetails = <>
-    <section><h3>执行方式</h3>{['agent', 'codex'].includes(execution.tool) && <StepAgentSettings execution={execution} config={loop.config} clients={clients} disabled={disabled} onChange={onAgentChange} />}<p>{toolLabels[execution.tool]}{execution.tool === 'mcp' && ` · ${execution.connectorId} / ${execution.operation}`}{['agent', 'codex'].includes(execution.tool) && ` · ${execution.mode === 'read-only' ? '只读' : '可修改工作区'}`}</p>{execution.command && <pre>{execution.command.map(show).join(' ')}</pre>}{execution.script && <><button className="script-link" onClick={() => onScript(execution.script)}>查看脚本 · {basename(execution.script)}<ArrowUpRight size={13} /></button>{!!execution.args?.length && <pre>参数：{execution.args.map(show).join(' ')}</pre>}</>}{execution.tool !== 'mcp' && <p>工作目录：{execution.cwd ? show(execution.cwd) : '本次工作区'}</p>}</section>
+    <section><h3>执行方式</h3>{['agent', 'codex'].includes(execution.tool) && <StepAgentSettings execution={execution} config={loop.config} clients={clients} disabled={disabled} onChange={onAgentChange} />}{!['agent', 'codex'].includes(execution.tool) && <p>{toolLabels[execution.tool]}{execution.tool === 'mcp' && ` · ${execution.connectorId} / ${execution.operation}`}</p>}{execution.command && <pre>{commandText(execution.command)}</pre>}{execution.script && <><button className="script-link" onClick={() => onScript(execution.script)}>查看脚本 · {show(`${paths.bundle}/${execution.script}`)}<ArrowUpRight size={13} /></button>{!!execution.args?.length && <pre>参数：{commandText(execution.args)}</pre>}</>}{['agent', 'codex'].includes(execution.tool) ? <StepDirectory key={step.id} home={home} defaultPath={paths.workspace} displayValue={paths.resolve(execution.cwd || '${workspace}', true)} value={execution.cwd || ''} disabled={disabled} onChange={onDirectoryChange} /> : execution.tool !== 'mcp' && <p>工作目录：{show(execution.cwd || '${workspace}', true)}</p>}</section>
     {execution.tool === 'command' && <section><h3>运行控制</h3><p>每次调用最多 {execution.timeoutSeconds ?? 180} 秒；{execution.effect === 'read' ? '只读，可按失败策略重试。' : '可能写入，发起后不自动重复执行。'}</p></section>}{execution.forEach && <section><h3>逐项处理</h3><p>{show(execution.forEach)}</p><p>按列表顺序执行；没有项目时跳过调用，继续后续步骤。</p></section>}
-    {!!step.checks?.length && <section><h3>完成条件</h3>{step.checks.map((check, index) => <div key={index}>{check.kind === 'command' ? <><p>{check.label || '命令检查'} · 退出码 {check.expectedExitCode ?? 0}</p><pre>{check.command.map(show).join(' ')}</pre></> : <p>文件存在：{show(check.path)}</p>}</div>)}</section>}
+    {!!step.checks?.length && <section><h3>完成条件</h3>{step.checks.map((check, index) => <div key={index}>{check.kind === 'command' ? <><p>{check.label || '命令检查'} · 退出码 {check.expectedExitCode ?? 0}</p><pre>{commandText(check.command)}</pre></> : <p>文件存在：{show(check.path, true)}</p>}</div>)}</section>}
     <section><h3>失败处理</h3><p>{!failure || failure.action === 'stop' ? '结束本次运行，保留结果与失败原因。' : `${failure.action === 'retry' ? '重试本步骤' : `返回「${loop.definition.steps.find((item) => item.id === failure.target)?.label || failure.target}」`}，最多自动纠正 ${failure.maxAttempts} 次。`}</p></section>
   </>;
   return <div id={`step-${step.id}`} className="step-detail step-configuration">
+    {execution.tool !== 'python' && executionDetails}
     <section><h3>任务要求</h3><p>{show(step.instructions)}</p></section>
     {!!Object.keys(step.inputs || {}).length && <section><h3>使用输入</h3>{Object.entries(step.inputs).map(([key, value]) => <p key={key}>{show(value)}</p>)}</section>}
 
-    {!!step.outputs?.length && <section><h3>产出</h3>{step.outputs.map((item) => <p key={item.id}>{item.label}<small>{item.kind === 'value' ? '数据' : show(item.path)}</small></p>)}</section>}
+    {!!step.outputs?.length && <section><h3>产出</h3>{step.outputs.map((item) => <p key={item.id}>{item.label}<small>{item.kind === 'value' ? '数据' : show(item.path, true)}</small></p>)}</section>}
     {execution.tool === 'python' && execution.args?.includes('--model') && <section><h3>模型资源</h3><StepModelSettings execution={execution} config={loop.config} disabled={disabled} onChange={onModelChange} /></section>}
-    {execution.tool === 'python' ? <details className="step-technical-details"><summary>执行详情</summary>{executionDetails}</details> : executionDetails}
+    {execution.tool === 'python' && <details className="step-technical-details"><summary>执行详情</summary>{executionDetails}</details>}
   </div>;
 }
 
@@ -169,7 +164,7 @@ function ArtifactContent({ content, filename = '', title = '', stepLabels = {} }
 }
 
 export function App() {
-  const [loops, setLoops] = useState([]), [activeId, setActive] = useState(sessionStorage.getItem('loops-active') || '__new__'), [drafts, setDrafts] = useState({});
+  const [loops, setLoops] = useState([]), [activeId, setActive] = useState(() => { const saved = sessionStorage.getItem('loops-active'); return saved === '__connectors__' ? '__plugins__' : saved || '__new__'; }), [drafts, setDrafts] = useState({});
   const [modelId, setModelId] = useState('');
   const [agentClients, setAgentClients] = useState(null);
   const [selectingAgent, setSelectingAgent] = useState(false);
@@ -179,10 +174,11 @@ export function App() {
   const [busy, setBusy] = useState({}), [stream, setStream] = useState({}), [modal, setModal] = useState(null), [error, setError] = useState(''), [settings, setSettings] = useState(null), [openStep, setOpenStep] = useState(null), [selectedRun, selectRun] = useState(null);
   const bottom = useRef(null), follow = useRef(true), input = useRef(null);
   const [automationSeed, setAutomationSeed] = useState(null);
+  const [automationDrafts, setAutomationDrafts] = useState({});
   const selectedModel = settings?.models?.find(item => item.id === (modelId || settings.defaultModelId));
   const automationsActive = activeId === '__automations__';
-  const connectorsActive = activeId === '__connectors__';
-  const storedLoop = activeId === '__new__' || automationsActive || connectorsActive ? null : loops.find((item) => item.id === activeId) || loops[0];
+  const pluginsActive = activeId === '__plugins__';
+  const storedLoop = activeId === '__new__' || automationsActive || pluginsActive ? null : loops.find((item) => item.id === activeId) || loops[0];
   const loop = storedLoop || { id: '__new__', title: '新建 Loop', definition: null, messages: [], runs: [], revision: 0, workdir: null };
   const pending = creating || Boolean(loop && (busy[loop.id] || loop.messages.some(m => m.process?.status === 'running'))), activeRun = loop?.runs.find((run) => activeStatuses.includes(run.status));
   const unsaved = loop?.definition && loop.savedRevision !== loop.revision;
@@ -233,22 +229,23 @@ export function App() {
     });
     return () => { mounted = false; unsubscribe(); };
   }, []);
-  useEffect(() => { if (loop) sessionStorage.setItem('loops-active', connectorsActive ? '__connectors__' : automationsActive ? '__automations__' : loop.id); selectRun(requestedRun.current); if (requestedRun.current) { follow.current = false; document.getElementById(requestedRun.current)?.scrollIntoView({ block: 'center' }); requestedRun.current = null; } }, [loop?.id, loop?.revision, automationsActive, connectorsActive]);
-  useEffect(() => { setOpenStep(null); }, [loop?.id, selectedVersion, automationsActive, connectorsActive]);
+  useEffect(() => { if (loop) sessionStorage.setItem('loops-active', pluginsActive ? '__plugins__' : automationsActive ? '__automations__' : loop.id); selectRun(requestedRun.current); if (requestedRun.current) { follow.current = false; document.getElementById(requestedRun.current)?.scrollIntoView({ block: 'center' }); requestedRun.current = null; } }, [loop?.id, loop?.revision, automationsActive, pluginsActive]);
+  useEffect(() => { setOpenStep(null); }, [loop?.id, selectedVersion, automationsActive, pluginsActive]);
   useEffect(() => { chooseVersion(null); }, [loop.id]);
   useEffect(() => { input.current?.focus(); }, [loop.id, loaded]);
   const eventCount = loop?.runs.reduce((sum, run) => sum + run.events.length, 0) || 0;
   useEffect(() => { if (follow.current) bottom.current?.scrollIntoView({ block: 'end' }); }, [loop?.id, loop?.messages, eventCount, stream]);
-  async function send(event) {
+  async function send(event, plugins = []) {
     event.preventDefault(); const text = drafts[loop.id]?.trim(); if (!text || historical || pending || submitting.current) return;
     submitting.current = true;
     const id = storedLoop?.id, draftId = loop.id;
     setCreating(!id); follow.current = true;
     try {
       setError('');
-      const result = await request('chat', { ...(id ? { loopId: id } : {}), text, modelId });
+      const result = await request('chat', { ...(id ? { loopId: id } : {}), text, modelId, plugins });
       if (!id && result.loopId) setActive(result.loopId);
       setDrafts((old) => ({ ...old, [draftId]: '' }));
+      return true;
     } catch (error) { setError(error.message); }
     finally { submitting.current = false; setCreating(false); input.current?.focus(); }
   }
@@ -268,14 +265,14 @@ export function App() {
   }
   if (!loaded) return <div className="startup"><SpinnerGap className="spinning" size={30} /><h1>Loops</h1><p>{error || '正在连接本地工作台…'}</p></div>;
   const feed = loop ? [...loop.messages.map((item) => ({ ...item, kind: 'message', at: item.createdAt })), ...loop.runs.map((run) => ({ ...run, kind: 'run', at: run.startedAt }))].sort((a, b) => a.at.localeCompare(b.at)) : [];
-  return <ModelContext.Provider value={{ settings, modelId, setModelId, updateModels: value => setSettings(previous => ({ ...previous, ...value })) }}><ResizablePanels className={cx('app-shell real-client', native && 'native-client')}><LoopNavigation onConnectors={() => setActive('__connectors__')} connectorsActive={connectorsActive} onAutomations={() => { setAutomationSeed(null); setActive('__automations__'); }} automationsActive={automationsActive} loops={loops} activeId={storedLoop?.id} busy={busy} act={act} onNew={() => { setActive('__new__'); setError(''); follow.current = true; input.current?.focus(); }} onSelect={(id) => { setActive(id); follow.current = true; }} onSettings={async () => { setModal({ type: 'settings' }); setSettings(await safe('settings')); }} /><PanelDivider panel="sidebar" />
-    {connectorsActive ? <Connectors /> : automationsActive ? <Automations key={automationSeed || 'all'} initialLoopId={automationSeed} configured={selectedModel?.configured} onLoop={(id, runId) => { requestedRun.current = runId; setActive(id); }} /> : !storedLoop ? <NewLoop input={input} text={drafts.__new__ || ''} onChange={(text) => setDrafts((old) => ({ ...old, __new__: text }))} onSubmit={send} pending={creating} configured={selectedModel?.configured} error={error} onDismissError={() => setError('')} /> : <main className="workspace"><header className={cx('topbar', !loop.definition && 'new-loop-topbar', loop.workdir && 'has-workdir')}><div className="loop-context"><div className="title-line">{loop.workdir ? <DirectoryTitle key={loop.id} loop={loop} home={settings?.homeDirectory} onOpen={() => native ? window.loops.reveal(loop.id) : setModal({ type: 'directory' })} /> : <h1>{loop.title}</h1>}{loop.definition && <span className={cx('save-state', viewingDraft ? 'unsaved' : 'saved')}>{viewingDraft ? '未保存' : `版本 ${selectedVersion}`}</span>}</div></div><div className="toolbar-actions">{loop.definition && <><button className="button button-secondary" disabled={!loop.savedRevision} onClick={() => { setAutomationSeed(loop.id); setActive('__automations__'); }}>自动化</button>{activeRun ? <button className="button button-secondary stop-button" onClick={() => safe('stop', { loopId: loop.id, runId: activeRun.id })} disabled={activeRun.status === 'stopping'}><Stop size={18} />停止</button> : <button className={cx('button', viewingDraft ? 'button-secondary' : 'button-primary')} disabled={!flowDefinition} onClick={() => setModal({ type: 'run', loop: viewLoop })}><Play size={19} />{viewingDraft ? '试跑' : '运行'}</button>}{viewingDraft && <button className="button button-primary" disabled={!canSave || pending || selectingAgent} title={!canSave ? '当前版本试跑成功后才能保存' : undefined} onClick={() => safe('save', { loopId: loop.id, expectedRevision: loop.revision })}><FloppyDisk size={19} />保存</button>}</>}</div></header>
+  return <PluginProvider><ModelContext.Provider value={{ settings, modelId, setModelId, updateModels: value => setSettings(previous => ({ ...previous, ...value })) }}><ResizablePanels className={cx('app-shell real-client', native && 'native-client')}><LoopNavigation onPlugins={() => setActive('__plugins__')} pluginsActive={pluginsActive} onAutomations={() => { setAutomationSeed(null); setActive('__automations__'); }} automationsActive={automationsActive} loops={loops} activeId={storedLoop?.id} busy={busy} act={act} onNew={() => { setActive('__new__'); setError(''); follow.current = true; input.current?.focus(); }} onSelect={(id) => { setActive(id); follow.current = true; }} onSettings={async () => { setModal({ type: 'settings' }); setSettings(await safe('settings')); }} /><PanelDivider panel="sidebar" />
+    {pluginsActive ? <Plugins onAgentsChange={setAgentClients} /> : automationsActive ? <Automations chatDrafts={automationDrafts} setChatDrafts={setAutomationDrafts} key={automationSeed || 'all'} initialLoopId={automationSeed} configured={selectedModel?.configured} onLoop={(id, runId) => { requestedRun.current = runId; setActive(id); }} /> : !storedLoop ? <NewLoop draftKey="loop:__new__" input={input} text={drafts.__new__ || ''} onChange={(text) => setDrafts((old) => ({ ...old, __new__: text }))} onSubmit={send} pending={creating} configured={selectedModel?.configured} error={error} onDismissError={() => setError('')} /> : <main className="workspace"><header className={cx('topbar', !loop.definition && 'new-loop-topbar', loop.workdir && 'has-workdir')}><div className="loop-context"><div className="title-line">{loop.workdir ? <DirectoryTitle key={loop.id} loop={loop} home={settings?.homeDirectory} onOpen={() => native ? window.loops.reveal(loop.id) : setModal({ type: 'directory' })} /> : <h1>{loop.title}</h1>}{loop.definition && <span className={cx('save-state', viewingDraft ? 'unsaved' : 'saved')}>{viewingDraft ? '未保存' : `版本 ${selectedVersion}`}</span>}</div></div><div className="toolbar-actions">{loop.definition && <><button className="button button-secondary" disabled={!loop.savedRevision} onClick={() => { setAutomationSeed(loop.id); setActive('__automations__'); }}>自动化</button>{activeRun ? <button className="button button-secondary stop-button" onClick={() => safe('stop', { loopId: loop.id, runId: activeRun.id })} disabled={activeRun.status === 'stopping'}><Stop size={18} />停止</button> : <button className={cx('button', viewingDraft ? 'button-secondary' : 'button-primary')} disabled={!flowDefinition} onClick={() => setModal({ type: 'run', loop: viewLoop })}><Play size={19} />{viewingDraft ? '试跑' : '运行'}</button>}{viewingDraft && <button className="button button-primary" disabled={!canSave || pending || selectingAgent} title={!canSave ? '当前版本试跑成功后才能保存' : undefined} onClick={() => safe('save', { loopId: loop.id, expectedRevision: loop.revision })}><FloppyDisk size={19} />保存</button>}</>}</div></header>
     {error && <div className="service-error" role="alert"><WarningCircle size={18} /><span>{error}</span><button aria-label="关闭提示" onClick={() => setError('')}><X size={17} /></button></div>}
     <div className="workspace-body"><section className="conversation" aria-label="与 Loops AI 对话"><div className="messages" onScroll={(event) => { const e = event.currentTarget; follow.current = e.scrollHeight - e.scrollTop - e.clientHeight < 100; }}>
     {!feed.length && <div className="message"><Avatar /><div className="message-content"><div className="message-author">Loops AI</div><p className="welcome-copy">描述你希望自动完成的工作。</p>{settings && !selectedModel?.configured && <p className="provider-note">模型尚未配置，需求可以先保留。</p>}</div></div>}
-    {feed.map((item) => <div className="message" key={item.id}><Avatar role={item.role} /><div className="message-content">{item.kind !== 'run' && <div className="message-author">{item.role === 'user' ? '你' : 'Loops AI'}<span>{date(item.at)}</span></div>}{item.process ? <ConversationProgress process={item.process} stream={stream[loop.id]} /> : item.kind === 'run' ? <RunCard loop={loop} run={item} artifact={showArtifact} selected={selectedRun === item.id} /> : item.role === 'assistant' ? <div className="markdown-artifact conversation-answer"><Markdown remarkPlugins={[remarkGfm]} skipHtml components={{ img: ({ alt }) => <span>{alt || ''}</span>, a: ({ children, href }) => <span>{children}{href ? ` (${href})` : ''}</span> }}>{item.text}</Markdown></div> : <p className={cx('message-text', item.role === 'error' && 'message-error')}>{item.text}</p>}</div></div>)}
+    {feed.map((item) => <div className="message" key={item.id}><Avatar role={item.role} /><div className="message-content">{item.kind !== 'run' && <div className="message-author">{item.role === 'user' ? '你' : 'Loops AI'}<span>{date(item.at)}</span></div>}{item.process ? <ConversationProgress process={item.process} stream={stream[loop.id]} /> : item.kind === 'run' ? <RunCard loop={loop} run={item} artifact={showArtifact} selected={selectedRun === item.id} /> : item.role === 'assistant' ? <div className="markdown-artifact conversation-answer"><Markdown remarkPlugins={[remarkGfm]} skipHtml components={{ img: ({ alt }) => <span>{alt || ''}</span>, a: ({ children, href }) => <span>{children}{href ? ` (${href})` : ''}</span> }}>{item.text}</Markdown></div> : item.role === 'user' ? <PluginMessage text={item.text} plugins={item.plugins} /> : <p className={cx('message-text', item.role === 'error' && 'message-error')}>{item.text}</p>}</div></div>)}
     {pending && !loop.messages.some(m => m.process?.status === 'running') && <div className="message"><Avatar /><div className="message-content"><div className="message-author">Loops AI <SpinnerGap size={17} className="spinning" /></div><p className="message-text">{stream[loop.id] || agentStatus[loop.id] || '正在处理…'}</p></div></div>}<div ref={bottom} /></div>
-    {!historical && <Composer input={input} text={drafts[loop.id] || ''} onChange={(text) => setDrafts((old) => ({ ...old, [loop.id]: text }))} onSubmit={send} pending={pending} onCancel={() => safe('cancel_chat', { loopId: loop.id })} placeholder={loop.definition ? '反馈哪里需要调整…' : '输入需求…'} rows={loop.definition ? 1 : 2} />}
+    {!historical && <Composer key={loop.id} draftKey={`loop:${loop.id}`} input={input} text={drafts[loop.id] || ''} onChange={(text) => setDrafts((old) => ({ ...old, [loop.id]: text }))} onSubmit={send} pending={pending} onCancel={() => safe('cancel_chat', { loopId: loop.id })} placeholder={loop.definition ? '反馈哪里需要调整…' : '输入需求…'} rows={loop.definition ? 1 : 2} />}
     </section><PanelDivider panel="inspector" /><aside id="loop-inspector" className="inspector" aria-label="流程与运行记录"><section>{loop.definition && <div className="section-heading workflow-heading">
       <h2>流程</h2>
       <div className="workflow-version-actions">
@@ -295,7 +292,7 @@ export function App() {
     {historical && !selectedSnapshot && (versionResult?.key === versionKey && versionResult.error
       ? <p className="form-error" role="alert">{versionResult.error}</p>
       : <p className="empty-copy">正在读取版本…</p>)}
-    {flowDefinition && <><ol className="flow-list">{flowDefinition.steps.map((step, index) => <li key={step.id}><button className="flow-step" aria-expanded={openStep === step.id} aria-controls={`step-${step.id}`} onClick={() => setOpenStep(openStep === step.id ? null : step.id)}><span className="step-number">{index + 1}</span><span>{step.label}</span><CaretRight className={cx('step-chevron', openStep === step.id && 'rotate')} size={14} /></button>{openStep === step.id && <StepDetail loop={viewLoop} step={step} clients={agentClients} disabled={historical || pending || selectingAgent} onAgentChange={selection => selectAgent(selection, step.id)} onModelChange={selection => act('step_model_selection', { loopId: loop.id, stepId: step.id, ...selection })} onScript={(path) => setModal({ type: 'artifact', title: path, content: flowDefinition.scripts[path] })} />}</li>)}</ol><button className="contract-summary" onClick={() => setModal({ type: 'contract', definition: flowDefinition })}><span>输入和输出</span><CaretRight size={17} /></button></>}
+    {flowDefinition && <><ol className="flow-list">{flowDefinition.steps.map((step, index) => <li key={step.id}><button className="flow-step" aria-expanded={openStep === step.id} aria-controls={`step-${step.id}`} onClick={() => setOpenStep(openStep === step.id ? null : step.id)}><span className="step-number">{index + 1}</span><span>{step.label}</span><CaretRight className={cx('step-chevron', openStep === step.id && 'rotate')} size={14} /></button>{openStep === step.id && <StepDetail loop={viewLoop} step={step} home={settings?.homeDirectory} selectedRun={selectedRun} onDirectoryChange={cwd => act('agent_directory', { loopId: loop.id, stepId: step.id, cwd })} clients={agentClients} disabled={historical || pending || selectingAgent} onAgentChange={selection => selectAgent(selection, step.id)} onModelChange={selection => act('step_model_selection', { loopId: loop.id, stepId: step.id, ...selection })} onScript={(path) => setModal({ type: 'artifact', title: path, content: flowDefinition.scripts[path] })} />}</li>)}</ol><button className="contract-summary" onClick={() => setModal({ type: 'contract', definition: flowDefinition })}><span>输入和输出</span><CaretRight size={17} /></button></>}
     </section>
     {!!loop.runs.length && <section className="history-section"><h2>运行记录</h2><div className="run-history">{[...loop.runs].reverse().map((run) => <button key={run.id} className={cx('history-row', run.status, selectedRun === run.id && 'active-history')} onClick={() => { selectRun(run.id); follow.current = false; document.getElementById(run.id)?.scrollIntoView({ block: 'center', behavior: 'smooth' }); }}><span>{run.status === 'success' ? <CheckCircle size={25} weight="fill" /> : activeStatuses.includes(run.status) ? <SpinnerGap size={25} className="spinning" /> : <WarningCircle size={25} />}</span><span><b>{`${runName(run)} · ${statuses[run.status]}`}</b><small>版本 {run.revision}{run.mode === 'trial' ? ' · 草稿' : ''} · {run.input.name}</small></span><CaretRight size={16} /></button>)}</div></section>}</aside></div></main>}
     {modal?.type === 'rollback' && <RollbackDialog loop={modal.loop} version={modal.version} act={act} onClose={() => setModal(null)} onRestored={() => { chooseVersion(null); setModal(null); }} />}
@@ -304,5 +301,5 @@ export function App() {
     {modal?.type === 'directory' && <Dialog title="工作目录" onClose={() => setModal(null)}><div className="contract-details"><p className="resource-path">{loop.workdir}</p></div></Dialog>}
     {modal?.type === 'settings' && <Settings settings={settings} act={act} refresh={async updatedAgent => { if (updatedAgent?.id) { setSettings(previous => ({ ...previous, agents: previous.agents.map(agent => agent.id === updatedAgent.id ? updatedAgent : agent) })); setAgentClients(previous => previous?.map(agent => agent.id === updatedAgent.id ? updatedAgent : agent)); return; } const value = await request('settings'); setSettings(value); setAgentClients(value.agents || []); if (modelId && !value.models.some(item => item.id === modelId)) setModelId(''); }} onClose={() => setModal(null)} />}
     {modal?.type === 'artifact' && <Dialog title={modal.title} onClose={() => setModal(null)}><ArtifactContent content={modal.content} filename={modal.filename} title={modal.title} stepLabels={modal.stepLabels} /><div className="dialog-actions artifact-actions"><button className="button button-primary" onClick={() => setModal(null)}>完成</button></div></Dialog>}
-  </ResizablePanels></ModelContext.Provider>;
+  </ResizablePanels></ModelContext.Provider></PluginProvider>;
 }

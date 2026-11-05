@@ -28,7 +28,7 @@ class FakeClients(AgentClients):
     def __init__(self):
         super().__init__()
         self._models = {"codex": None, "mimo": None}
-        self.created, self.calls = [], []
+        self.created, self.calls, self.directories = [], [], []
 
     async def probe(self, client_id):
         return {'id': client_id, 'name': client_id, 'ready': True, 'installed': True, 'version': '1.0.0',
@@ -37,10 +37,11 @@ class FakeClients(AgentClients):
     async def configured_probe(self, key):
         return await self.model_state(await self.probe(key))
 
-    def session(self, binding, cwd, emit, *, read_paths=()):
+    def session(self, binding, cwd, emit, *, read_paths=(), write_paths=()):
         owner = self
         key = binding['id']
         owner.created.append(key)
+        owner.directories.append((str(cwd), list(write_paths)))
         class Session:
             async def __aenter__(self):
                 emit('session', 'test session', threadId=key + '-session')
@@ -90,6 +91,50 @@ class AgentWorkflowTests(unittest.IsolatedAsyncioTestCase):
         current = self.service.store.get(self.loop['id'])
         self.assertNotEqual(current['revision'], current['savedRevision'])
         self.assertEqual(json.loads((Path(current['versions'][0]['path'])/'loop.json').read_text())['config']['defaultAgentId'], 'mimo')
+
+    async def test_custom_directories_are_persisted_frozen_and_isolate_sessions(self):
+        await self.build()
+        first = Path(self.temp.name) / '项目 A'; first.mkdir()
+        second = Path(self.temp.name) / '项目 B'; second.mkdir()
+        for step_id, directory in [('analyze', first), ('followup', second)]:
+            await self.service.handle('agent_directory', {'loopId': self.loop['id'], 'stepId': step_id, 'cwd': str(directory)})
+        trial = self.service.runner.start(self.loop['id'])
+        await self.service.runner.tasks[trial['id']]
+        await self.service.handle('save', {'loopId': self.loop['id']})
+        self.clients.calls.clear()
+        self.clients.created.clear()
+        self.clients.directories.clear()
+        run = await self.service.handle('start', {'loopId': self.loop['id']})
+        await self.service.handle('agent_directory', {'loopId': self.loop['id'], 'stepId': 'analyze', 'cwd': None})
+        await self.service.runner.tasks[run['id']]
+        result = self.service.store.run(self.loop['id'], run['id'])
+        self.assertEqual(result['status'], 'success', result.get('reason'))
+        self.assertEqual(self.clients.directories[0], (str(first.resolve()), []))
+        self.assertEqual(self.clients.directories[2], (str(second.resolve()), []))
+        self.assertEqual(self.clients.created, ['mimo', 'codex', 'mimo'])
+        self.assertEqual(result['definition']['steps'][0]['execution']['cwd'], str(first.resolve()))
+        current = self.service.store.get(self.loop['id'])
+        self.assertNotIn('cwd', current['definition']['steps'][0]['execution'])
+        self.assertNotEqual(current['revision'], current['savedRevision'])
+        self.assertEqual(Path(result['stepResults'][0]['outputs']['report']).read_text(), 'mimo report')
+
+    async def test_directory_errors_do_not_change_definition_and_missing_runtime_path_fails(self):
+        await self.build()
+        before = self.service.store.get(self.loop['id'])['revision']
+        file = Path(self.temp.name) / 'file'; file.write_text('x')
+        for path in ['relative', str(file), str(file / 'missing'), 3]:
+            with self.assertRaises(ValueError):
+                await self.service.handle('agent_directory', {'loopId': self.loop['id'], 'stepId': 'analyze', 'cwd': path})
+        self.assertEqual(self.service.store.get(self.loop['id'])['revision'], before)
+        folder = Path(self.temp.name) / 'removed'; folder.mkdir()
+        await self.service.handle('agent_directory', {'loopId': self.loop['id'], 'stepId': 'analyze', 'cwd': str(folder)})
+        folder.rmdir()
+        run = await self.service.handle('start', {'loopId': self.loop['id']})
+        await self.service.runner.tasks[run['id']]
+        result = self.service.store.run(self.loop['id'], run['id'])
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('工作目录不存在', result['reason'])
+        self.assertEqual(self.clients.calls, [])
 
     async def test_step_selection_can_return_to_inheritance_and_legacy_stays_codex(self):
         await self.build()
@@ -345,6 +390,26 @@ print(json.dumps({'type':'step_finish','sessionID':'one','part':{'reason':'stop'
             binary.chmod(0o755)
             async with MimoSession(root, lambda *a, **k: None, binary=str(binary), model='xiaomi/chosen', reasoning='high') as session:
                 self.assertEqual(await session.ask('hello'), 'OK')
+
+    async def test_mimo_delivery_access_is_only_added_in_write_mode(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            delivery = root / 'delivery'; delivery.mkdir()
+            binary = root / 'mimo-permissions'
+            binary.write_text('#!' + sys.executable + '\n' + """
+import os,json,sys
+permissions=json.loads(os.environ['MIMOCODE_PERMISSION'])
+print(json.dumps({'type':'text','sessionID':'one','part':{'text':json.dumps(permissions)}}))
+print(json.dumps({'type':'step_finish','sessionID':'one','part':{'reason':'stop'}}))
+""")
+            binary.chmod(0o755)
+            for readonly in [False, True]:
+                async with MimoSession(root, lambda *a, **k: None, binary=str(binary), write_paths=[delivery]) as session:
+                    permissions = json.loads(await session.ask('hello', readonly=readonly))
+                rule = permissions['external_directory'].get(str(delivery.resolve() / '*'))
+                self.assertEqual(rule, None if readonly else 'allow')
+                if readonly:
+                    self.assertEqual(permissions['*'], 'deny')
 
     async def test_catalog_filters_private_metadata_and_keeps_native_levels(self):
         from loops_runtime.agent_plugins.mimo.catalog import parse_mimo_models

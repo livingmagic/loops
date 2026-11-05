@@ -128,13 +128,13 @@ class Automations:
         self.changed(task["id"])
         return self.detail(task["id"])
 
-    def message(self, task_id, role, text):
+    def message(self, task_id, role, text, **extra):
         task = self.task(task_id)
         if role not in {"user", "assistant", "error"} or not isinstance(text, str):
             raise ValueError("对话消息无效。")
         if role == 'user':
             task.pop('connectionWait', None)
-        task.setdefault("messages", []).append({"id": uid("message"), "role": role, "text": self.redact(text), "createdAt": now()})
+        task.setdefault("messages", []).append({"id": uid("message"), "role": role, "text": self.redact(text), "createdAt": now(), **extra})
         self.put("automation_tasks", task)
         self.changed(task_id)
         return True
@@ -200,7 +200,7 @@ class Automations:
             raise ValueError('请指定需要连接的服务。')
         known = set(self.connectors.items) | {p['id'] for p in presets()}
         if any(key not in known for key in connector_ids):
-            raise ValueError('服务尚未添加，请先添加连接器后继续搭建。')
+            raise ValueError('服务尚未添加，请先添加插件后继续搭建。')
         ids = list(dict.fromkeys(connector_ids))
         if self.connectors_ready(ids):
             return {'waiting': False, 'message': '这些服务已连接，可以继续搭建。'}
@@ -290,13 +290,13 @@ class Automations:
         value["title"] = title
         grants = value.get("connectors", [])
         if not isinstance(grants, list) or len(grants) > 30:
-            raise ValueError("连接器授权需要列表，最多 30 项。")
+            raise ValueError("插件授权需要列表，最多 30 项。")
         seen_connectors = set()
         for grant in grants:
             if not isinstance(grant, dict) or not isinstance(grant.get("id"), str) or grant["id"] in seen_connectors or not isinstance(grant.get("operations"), list) or not grant["operations"] or any(not isinstance(o, str) for o in grant["operations"]):
-                raise ValueError("每项连接器授权需要唯一 id 和允许调用的 operations 列表。")
+                raise ValueError("每项插件授权需要唯一 id 和允许调用的 operations 列表。")
             if not self.connectors:
-                raise ValueError("连接器服务不可用。")
+                raise ValueError("插件服务不可用。")
             self.connectors.entry(grant["id"])
             seen_connectors.add(grant["id"])
         if self.connectors:
@@ -518,7 +518,7 @@ class Automations:
             if task.get("blockedConnector"):
                 connector = self.connectors.entry(task["blockedConnector"])
                 if not connector["enabled"]:
-                    raise ValueError("请先重新连接授权失效的连接器。")
+                    raise ValueError("请先重新连接授权失效的插件。")
                 task.pop("blockedConnector", None)
             for node in task["spec"]["nodes"]:
                 self.store.get(node["loopId"])
@@ -715,7 +715,7 @@ class Automations:
         task = self.task(task_id)
         if task.get("blockedConnector"):
             if not self.connectors.entry(task["blockedConnector"])["enabled"]:
-                raise ValueError("请先重新连接授权失效的连接器。")
+                raise ValueError("请先重新连接授权失效的插件。")
             task.pop("blockedConnector", None)
             self.put("automation_tasks", task)
         if task_id in self.jobs:
@@ -1057,10 +1057,10 @@ class Automations:
                         key, operation = message.get("connectorId"), message.get("operation")
                         grant = next((g for g in version["spec"].get("connectors", []) if g["id"] == key), None)
                         if not grant or operation not in grant["operations"]:
-                            raise ValueError("此版本自动化未授权这项连接器操作，请先修改并保存流程。")
+                            raise ValueError("此版本自动化未授权这项插件操作，请先修改并保存流程。")
                         call_key = message.get("callKey", "")
                         if not isinstance(call_key, str) or len(call_key) > 500:
-                            raise ValueError("连接器调用标识需要不超过 500 字的字符串。")
+                            raise ValueError("插件调用标识需要不超过 500 字的字符串。")
                         evidence = {"at": now(), "connectorId": key, "operation": operation, "callKey": call_key,
                                     "arguments": message.get("arguments", {}), "revision": version.get("connectorVersions", {}).get(key)}
                         contract = version.get('connectorContracts', {}).get(key, {}).get(operation, {})
@@ -1153,7 +1153,7 @@ class Automations:
         if method == "automation_new_conversation":
             return self.new_conversation(params.get("seedLoopId"))
         if method == "automation_message":
-            return self.message(task_id, params["role"], params["text"])
+            return self.message(task_id, params["role"], params["text"], **params.get("extra", {}))
         if method == 'automation_wait_for_connectors':
             return self.wait_for_connectors(task_id, params['connectorIds'])
         if method == 'automation_connection_waits':

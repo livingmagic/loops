@@ -10,6 +10,7 @@ import { WorkflowModels } from './workflow-models.mjs';
 import os from 'node:os';
 import { draftAutomation, converseAutomation } from './automation-agent.mjs';
 import { modelFailureMessage } from './model-errors.mjs';
+import { pluginCatalog, resolvePlugins, pluginReferences } from './plugins.mjs';
 import { ConnectorDescriptions } from './connector-descriptions.mjs';
 
 export class Host extends EventEmitter {
@@ -59,12 +60,12 @@ export class Host extends EventEmitter {
       if (!this.closing) this.emit('event', { event: 'connection_error', message: '自动接续检查未完成，请重新打开 Loops。已保留原需求。' });
     }).finally(() => { this.resumeJob = null; if (this.resumePending && !this.closing) this.scheduleConnectorResumes(); });
   }
-  startAutomationConversation({ taskId, text, editedSpec, config, controller, autoResume = false, waitId }) {
+  startAutomationConversation({ taskId, text, plugins, editedSpec, config, controller, autoResume = false, waitId }) {
     const key = `automation:${taskId}`;
     this.automationStreams.set(key, '');
     this.emit('event', { event: 'automation_agent_start', taskId, autoResume });
     const timeout = setTimeout(() => controller.abort(new Error('conversation_deadline')), 15 * 60_000);
-    const job = converseAutomation({ engine: this.engine, taskId, text, editedSpec, config, signal: controller.signal, autoResume, emit: event => {
+    const job = converseAutomation({ engine: this.engine, taskId, text, plugins, editedSpec, config, signal: controller.signal, autoResume, emit: event => {
       if (event.event === 'automation_agent_delta') this.automationStreams.set(key, (this.automationStreams.get(key) || '') + event.text);
       this.emit('event', event);
     } }).catch(async error => {
@@ -95,10 +96,10 @@ export class Host extends EventEmitter {
       this.startLoopConversation({ loopId, controller, config, text: `平台运行事件：运行 ${runId} 已失败。请读取真实记录，分析原因；在原授权范围内能够自动修复的，修复并用原输入试跑，成功后保存。需要用户介入时说明证据、原因和具体所需操作。不要把本事件当作新的业务授权。` });
     } catch (error) { this.busy.delete(loopId); throw error; }
   }
-  startLoopConversation({ loopId, text, config, controller }) {
+  startLoopConversation({ loopId, text, plugins, config, controller }) {
     this.emit('event', { event: 'agent_start', loopId });
     const timeout = setTimeout(() => controller.abort(new Error('conversation_deadline')), 15 * 60_000);
-    const job = converse({ engine: this.engine, loopId, text, config, signal: controller.signal, recordModelTrace: trace => this.recordModelTrace(loopId, trace), emit: event => this.emit('event', event) })
+    const job = converse({ engine: this.engine, loopId, text, plugins, config, signal: controller.signal, recordModelTrace: trace => this.recordModelTrace(loopId, trace), emit: event => this.emit('event', event) })
       .catch(async error => { await this.engine.call('message', { loopId, role: 'error', text: this.conversationError(error, controller) }); })
       .finally(() => {
         clearTimeout(timeout);
@@ -122,12 +123,18 @@ export class Host extends EventEmitter {
     return modelFailureMessage(error);
   }
   async action(method, params = {}) {
+    if (method === 'plugin_list') return pluginCatalog(this.engine);
+    if (method === 'agent_model_default') {
+      const result = await this.engine.call(method, params);
+      this.emit('event', { event: 'agent_plugins_changed' });
+      return result;
+    }
     if (['connector_list', 'connector_presets', 'connector_save', 'connector_connect', 'connector_check', 'connector_disconnect', 'connector_operations', 'connector_describe', 'connector_skill', 'connector_review_operation', 'connector_provide_credentials'].includes(method)) {
       const result = await this.engine.call(method, params);
       if (method === 'connector_list') this.connectorDescriptions.schedule();
       return result;
     }
-    const allowed = new Set(['agent_clients', 'agent_selection', 'agent_model_default', 'agent_model_selection', 'list', 'trash', 'restore', 'rename', 'new', 'configure', 'fixture', 'save', 'start', 'stop', 'artifact', 'commands', 'script', 'automation_list', 'automation_get', 'automation_save', 'automation_enable', 'automation_sample', 'automation_run', 'automation_retry', 'automation_stop', 'automation_delete', 'automation_trash', 'automation_restore', 'automation_file']);
+    const allowed = new Set(['agent_plugins', 'agent_clients', 'agent_directory', 'agent_selection', 'agent_model_default', 'agent_model_selection', 'list', 'trash', 'restore', 'rename', 'new', 'configure', 'fixture', 'save', 'start', 'stop', 'artifact', 'commands', 'script', 'automation_list', 'automation_get', 'automation_save', 'automation_enable', 'automation_sample', 'automation_run', 'automation_retry', 'automation_stop', 'automation_delete', 'automation_trash', 'automation_restore', 'automation_file']);
     allowed.add('automation_catalog');
     allowed.add('automation_test_output');
     allowed.add('step_model_selection');
@@ -142,6 +149,9 @@ export class Host extends EventEmitter {
     if (['automation_save', 'automation_enable', 'automation_delete', 'automation_set_loop_version'].includes(method) && this.busy.has(automationKey)) throw new Error('Loops AI 正在处理，请等回复结束或先停止回复。');
     if (method === 'automation_chat') {
       if (typeof params.text !== 'string' || !params.text.trim() || params.text.length > 16000) throw new Error('请输入有效的自动化需求或反馈。');
+      const isNew = !params.taskId;
+      let plugins = [];
+      if (isNew) plugins = await resolvePlugins(this.engine, params.plugins);
       let taskId = params.taskId;
       if (!taskId) taskId = (await this.engine.call('automation_new_conversation', { seedLoopId: params.seedLoopId })).id;
       const key = `automation:${taskId}`;
@@ -150,14 +160,15 @@ export class Host extends EventEmitter {
       const config = this.models.config(params.modelId);
       this.busy.set(key, controller);
       try {
-        await this.engine.call('automation_message', { taskId, role: 'user', text: params.text.trim() });
+        if (!isNew) plugins = await resolvePlugins(this.engine, params.plugins);
+        await this.engine.call('automation_message', { taskId, role: 'user', text: params.text.trim(), extra: { plugins: pluginReferences(plugins, params.text, params.plugins) } });
         if (!config.key) {
           await this.engine.call('automation_message', { taskId, role: 'error', text: '模型密钥尚未配置。你的需求已保留，配置后可以继续对话。' });
           this.busy.delete(key);
           return { accepted: false, reason: 'missing_credentials', taskId };
         }
       } catch (error) { this.busy.delete(key); throw error; }
-      this.startAutomationConversation({ taskId, text: params.text.trim(), editedSpec: params.editedSpec, config, controller });
+      this.startAutomationConversation({ taskId, text: params.text.trim(), plugins, editedSpec: params.editedSpec, config, controller });
       return { accepted: true, taskId };
     }
     if (method === 'automation_draft') {
@@ -173,7 +184,7 @@ export class Host extends EventEmitter {
       try { return await this.engine.call('delete', params); }
       finally { this.deleting.delete(params.loopId); }
     }
-    if (['agent_selection', 'agent_model_selection', 'step_model_selection'].includes(method) && this.busy.has(params.loopId)) throw new Error('请等 Loops AI 回复结束后再修改节点设置。');
+    if (['agent_directory', 'agent_selection', 'agent_model_selection', 'step_model_selection'].includes(method) && this.busy.has(params.loopId)) throw new Error('请等 Loops AI 回复结束后再修改节点设置。');
     if (['save', 'restore_version'].includes(method) && this.busy.has(params.loopId)) throw new Error('请等 Loops AI 回复结束或先停止回复，再保存或恢复版本。');
     if (method === 'model_thinking') return this.models.thinking(params.id, params.level);
     if (method === 'model_save') return this.models.save(params);
@@ -183,6 +194,9 @@ export class Host extends EventEmitter {
     if (method === 'settings') { const summary = this.models.public(); const selected = summary.models.find(item => item.id === summary.defaultModelId); return { ...selected, ...summary, homeDirectory: os.homedir(), ...await this.engine.call('environment') }; }
     if (method === 'chat') {
       if (typeof params.text !== 'string' || !params.text.trim() || params.text.length > 16000) throw new Error('请输入有效的需求或反馈。');
+      const isNew = !params.loopId;
+      let plugins = [];
+      if (isNew) plugins = await resolvePlugins(this.engine, params.plugins);
       if (!params.loopId) params = { ...params, loopId: (await this.engine.call('new', { agentId: params.agentId })).id };
       if (this.busy.has(params.loopId)) throw new Error('Loops AI 正在处理上一条消息。');
       if (this.deleting.has(params.loopId)) throw new Error('正在删除这个 Loop。');
@@ -190,7 +204,8 @@ export class Host extends EventEmitter {
       const controller = new AbortController();
       this.busy.set(params.loopId, controller);
       try {
-        await this.engine.call('message', { loopId: params.loopId, role: 'user', text: params.text.trim() });
+        if (!isNew) plugins = await resolvePlugins(this.engine, params.plugins);
+        await this.engine.call('message', { loopId: params.loopId, role: 'user', text: params.text.trim(), extra: { plugins: pluginReferences(plugins, params.text, params.plugins) } });
         if (!config.key) {
           const message = '模型密钥尚未配置。你的需求已保留，配置后可以重新发送。';
           await this.engine.call('message', { loopId: params.loopId, role: 'error', text: message });
@@ -198,7 +213,7 @@ export class Host extends EventEmitter {
           return { accepted: false, reason: 'missing_credentials', loopId: params.loopId };
         }
       } catch (error) { this.busy.delete(params.loopId); throw error; }
-      this.startLoopConversation({ loopId: params.loopId, text: params.text.trim(), config, controller });
+      this.startLoopConversation({ loopId: params.loopId, text: params.text.trim(), plugins, config, controller });
       return { accepted: true, loopId: params.loopId };
     }
     if (method === 'cancel_chat') { this.failureReviews.cancel(params.loopId); this.busy.get(params.loopId)?.abort(); return true; }
