@@ -29,7 +29,7 @@
 
 真实服务脚本需先设置 `LOOPS_MODEL_CONFIG_DIR` 指向已配置模型的客户端数据目录；脚本通过 Electron 读取加密配置，不读取环境文件。`node scripts/live-automation-chat.mjs` 验证真实多轮对话、修改、保存、试跑、交付与重启继续，会消耗模型额度。`node scripts/live-automation-journey.mjs` 使用隔离目录、真实 Python 和本机真实 Pi + DeepSeek 验证采集、串联、投递与重启，会消耗模型额度。示例中的两个 Python Loop 为手工测试定义，不代表 Codex 或 AI 业务分析能力的新增验收。
 
-双击 `scripts/open-latest.command` 可打开当前打包客户端，使用正常 Application Support 数据与项目现有本机模型配置，不进入验收数据库。
+双击 `scripts/open-latest.command` 可打开当前打包客户端进行验收，数据库、模型和插件设置保存在仓库的 `qa/desktop-client/`，工作文件保存在其 `workspaces/` 下。首次可读取项目已有的本机模型配置，后续设置写入验收目录。请勿直接打开 `out/` 中的构建产物做验收；日常使用打开 `/Applications/Loops.app`，继续使用原来的正式数据和配置。
 
 ## 插件
 
@@ -65,7 +65,7 @@ npm ci
 npm run dev
 ```
 
-`npm run dev` 启动原生 Mac 窗口。`npm run dev:browser` 单独启动用于界面检查的本地开发入口（4174端口）；浏览器与 Mac 默认数据目录不同。浏览器入口不提供原生文件选择与 Finder 打开目录。
+`npm run dev` 启动原生 Mac 窗口；它与 `npm start` 均默认使用 `desktop/.local/desktop/` 数据目录和其下的 `workspaces/`，不读写正式客户端数据库。`npm run dev:browser` 单独启动用于界面检查的本地开发入口（4174端口）；浏览器与 Mac 默认数据目录不同。浏览器入口不提供原生文件选择与 Finder 打开目录。
 
 开发运行数据在 `desktop/.local/`，正式应用默认使用 macOS Application Support。每个 Loop 自动创建独立工作目录：`draft/`、`versions/<版本>/`、`runs/<运行ID>/`。每次运行保留输入副本、定义、脚本、工作区、事件、步骤结果和实际检查记录，具体交付文件由流程定义决定。运行目录应保留，以便复查和更新已有 PR。
 

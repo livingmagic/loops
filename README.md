@@ -43,7 +43,7 @@ npm run dev
 
 ## 数据与执行权限
 
-开发数据保存在 `desktop/.local/`，打包应用默认使用 macOS Application Support。Loop 工作目录默认位于 `~/Loops/`。运行会保留输入副本、生成脚本、模型输出和日志；分享验收材料前请先脱敏。
+开发数据及工作目录保存在 `desktop/.local/`；打包验收通过 `desktop/scripts/open-latest.command` 使用 `qa/desktop-client/` 及其 `workspaces/`。已安装的正式应用使用 macOS Application Support，正式 Loop 工作目录仍位于 `~/Loops/`。运行会保留输入副本、生成脚本、模型输出和日志；分享验收材料前请先脱敏。
 
 输入及工具读取的内容可能发送给 DeepSeek 或 Codex 服务。只使用有权提供的资料，并自行确认服务使用要求与费用。
 

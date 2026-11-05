@@ -3,13 +3,12 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Host } from '../host/service.mjs';
+import { clientDataPaths } from '../host/data-paths.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-if (process.env.LOOPS_DATA_DIR) {
-  const dataDirectory = path.resolve(process.env.LOOPS_DATA_DIR);
-  fs.mkdirSync(dataDirectory, { recursive: true });
-  app.setPath('userData', dataDirectory);
-}
+const { dataDirectory, workspaceRoot } = clientDataPaths({ isPackaged: app.isPackaged, root, userData: app.getPath('userData'), home: app.getPath('home') });
+fs.mkdirSync(dataDirectory, { recursive: true });
+app.setPath('userData', dataDirectory);
 if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 let host, window, quitting = false;
 const openedAuthorizations = new Map();
@@ -32,9 +31,8 @@ function createWindow() {
 app.whenReady().then(() => {
 app.setName('Loops');
 app.dock?.setIcon(path.join(root, 'public/assets/loops-icon.png'));
-const dataDirectory = process.env.LOOPS_DATA_DIR || app.getPath('userData');
 try {
-  host = new Host({ dataDirectory,
+  host = new Host({ dataDirectory, workspaceRoot,
     encryptSecret: value => { if (!safeStorage.isEncryptionAvailable()) throw new Error(); return safeStorage.encryptString(value).toString('base64'); },
     decryptSecret: value => safeStorage.decryptString(Buffer.from(value, 'base64')), configDirectory: process.env.LOOPS_CONFIG_DIR || (app.isPackaged ? dataDirectory : root),
     fallbackConfigDirectory: app.isPackaged ? undefined : path.resolve(root, '..'),
