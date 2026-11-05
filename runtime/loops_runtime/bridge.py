@@ -1,9 +1,10 @@
 import asyncio
+import copy
 import json
 import os
 import sys
 from pathlib import Path
-from .store import Store
+from .store import Store, uid
 from .runner import Runner
 from .fixture import create_fixture
 from .agent_clients import AgentClients, validate_agent_id, validate_model, step_agent, resolve_selection, PLUGIN_ERRORS
@@ -18,16 +19,25 @@ def output(value):
 
 
 class Service:
-    def __init__(self, root, notify=output, workspace_root=None):
+    def __init__(self, root, notify=output, workspace_root=None, model_host=None):
         self.store = Store(root, workspace_root=workspace_root)
         self.notify = notify
         self.connectors = Connectors(self.store.root, notify)
         self.agent_clients = AgentClients(self.store.root)
-        self.runner = Runner(self.store, self.changed, connectors=self.connectors, agent_clients=self.agent_clients)
+        self.model_host = model_host
+        self.runner = Runner(self.store, self.changed, connectors=self.connectors, agent_clients=self.agent_clients, model_host=model_host)
         self.automations = Automations(self.store, self.runner, notify, connectors=self.connectors)
 
     def changed(self):
         self.notify({"event": "state", "loops": self.store.list()})
+
+    async def validate_models(self, definition, config):
+        from .workflow_models import selections
+        selected = selections(definition, config)
+        if selected:
+            if not self.model_host:
+                raise ValueError('模型 API 服务未连接。')
+            await self.model_host.call('validate', {'bindings': list(selected.values())})
 
     async def handle(self, method, params):
         if method != "shutdown":
@@ -55,13 +65,42 @@ class Service:
             value = self.store.rename(loop_id, params.get("title"))
         elif method == "configure":
             value = self.store.configure(loop_id, params["config"])
+        elif method in {'model_catalog', 'add_model_resource', 'step_model_selection'}:
+            if not self.model_host:
+                raise ValueError('模型 API 服务未连接，请通过 Loops 客户端配置。')
+            if method == 'model_catalog':
+                return await self.model_host.call('catalog')
+            description = await self.model_host.call('describe', {'modelId': params.get('modelId')})
+            loop = self.store.get(loop_id)
+            metadata = {key: description[key] for key in ('modelId', 'provider', 'model', 'baseUrl') if key in description}
+            resource = next((item for item in loop['config']['resources'] if item['kind'] == 'model'
+                             and all(item.get(key) == metadata.get(key) for key in ('modelId', 'provider', 'model', 'baseUrl'))), None)
+            config = copy.deepcopy(loop['config'])
+            if resource is None:
+                resource = {'id': uid('model'), 'kind': 'model', 'label': description['name'], **metadata}
+                config['resources'].append(resource)
+            if method == 'add_model_resource':
+                self.store.configure(loop_id, config)
+                self.changed()
+                return {**resource, 'thinkingLevels': description['thinkingLevels'], 'thinkingLevel': description['thinkingLevel']}
+            definition = copy.deepcopy(loop['definition'])
+            step = next((item for item in (definition or {}).get('steps', []) if item['id'] == params.get('stepId')), None)
+            from .workflow_models import model_parameters
+            reasoning = params.get('reasoning')
+            if not step or step['execution']['tool'] != 'python' or not model_parameters(step['execution']):
+                raise ValueError('请选择使用 --model 和 --reasoning 参数的 Python 节点。')
+            if reasoning not in description['thinkingLevels']:
+                raise ValueError('此模型不支持所选思考强度。')
+            args = step['execution']['args']
+            args[args.index('--model') + 1] = resource['id']
+            args[args.index('--reasoning') + 1] = reasoning
+            value = self.store.update_definition(loop_id, definition, config=config)
         elif method == "agent_selection":
             loop = self.store.get(loop_id)
             agent_id = params.get('agentId')
             if agent_id is not None:
                 validate_agent_id(agent_id)
             if params.get('stepId'):
-                import copy
                 definition = copy.deepcopy(loop['definition'])
                 step = next((s for s in (definition or {}).get('steps', []) if s['id'] == params['stepId']), None)
                 if not step or step['execution']['tool'] not in {'agent', 'codex'}:
@@ -94,7 +133,6 @@ class Service:
             model = validate_model(params.get('model'))
             reasoning = validate_model(params.get('reasoning'))
             if params.get('stepId'):
-                import copy
                 definition = copy.deepcopy(loop['definition'])
                 step = next((s for s in (definition or {}).get('steps', []) if s['id'] == params['stepId']), None)
                 if not step or step['execution']['tool'] not in {'agent', 'codex'}:
@@ -149,12 +187,12 @@ class Service:
                 if len(files) >= 150:
                     break
             value = {"config": loop["config"], "files": files, "readme": (root / "README.md").read_text(errors="replace")[:12000] if (root / "README.md").is_file() else "", "definition": loop["definition"], "python": sys.executable,
-                     "capabilities": {"agents": await self.agent_clients.discover(), "defaultAgentId": loop["config"].get("defaultAgentId", "codex"), "tools": ["agent", "python", "command", "mcp"], "mcp": "先 list_connectors、list_connector_operations 和 inspect_connector_operation 发现真实能力。execution={tool:mcp,connectorId,operation,arguments}；outputs 的 kind=value、pointer 为指向响应的 JSON Pointer（/payload 为业务数据，/links 为链接列表，/result 为原始结果）。完整步骤输出引用保留原始类型。MCP execution.forEach 可完整引用 JSON 数组，arguments 用 ${item} 或 ${item.字段} 逐项绑定；value 输出按项汇总数组，空输入产生空数组且不调用。Python/命令步骤的 outputs 可用 kind=json，仍写 path 文件，平台解析 JSON 后传递原始数据。数据产出自动保存 JSON 供查看，不是本机文件路径；旧文件产出保持不变。", "pythonContext": "Python 脚本从 os.environ['LOOPS_CONTEXT'] 读取 JSON，字段 inputs、outputs、workspace、bundle、scripts、resources、failure、checks；不要写死本次路径。inputs 只包含本步骤 inputs 映射后的值；outputs 只包含本步骤声明的文件路径，不支持目录产出。checks 是执行器已经运行的真实命令记录列表，每项包含 stage、command、exitCode、output、expectedExitCode、passed；passed 表示退出码符合预期，因此验证预期失败（expectedExitCode=1）时 exitCode=1 且 passed=true。报告直接读取这些记录，不把预期退出码当作运行结果。可修改仓库是 workspace，resources 是原始只读资料。bundle 是本次运行的固定版本包；scripts 是声明脚本名到固定绝对路径的映射，校验代码直接使用这些路径，不在 workspace 重建。", "references": "${inputs.ID}、${resources.ID}、${steps.ID.outputs.ID}、${workspace}、${bundle}、${failure}、${checks}；任务指令、执行配置与 checks 支持引用。resources 为已选原始资料路径；选择 Git 资料时自动建立独立 workspace，代码修改在 workspace 中执行。", "agent": "智能步骤使用 tool=agent，省略 agentId 使用 config.defaultAgentId；员工指定某步骤使用其他客户端时填写 agentId。客户端不可用时告知用户，不自动替换。模型优先级为 execution.model、config.agentModels[agentId]、客户端条目的 defaultModel。execution.reasoning 或 config.agentReasoning[agentId] 可指定思考强度，取 models[].reasoningLevels 中的值。用户未要求时不填写模型或强度覆盖。instructions 为任务指令；execution.session 相同且工作目录相同则共享会话；mode 可为 write 或 read-only；只读时可用 responseOutput 将最终回复保存到指定产出 ID。", "commands": "command 支持 forEach 完整引用 JSON 数组，参数用 ${item} 或 ${item.字段}，空数组不执行。value 产出声明 source=stdout、format=json，pointer 可选；单次输出原始 JSON，逐项输出数组。timeoutSeconds 默认 180 秒。effect=read 仅用于确认只读的命令；省略按 write，发起后不自动重放。命令使用程序和参数数组；cwd 默认本次 workspace；Python 使用 python；声明脚本使用 ${bundle}/scripts/name.py；旧的 scripts/name.py 与 ${workspace}/scripts/name.py 参数也会解析到同一固定版本脚本。checks 的 expectedExitCode 默认 0，可以用 1 验证修复前失败。"}}
+                     "capabilities": {"agents": await self.agent_clients.discover(), "defaultAgentId": loop["config"].get("defaultAgentId", "codex"), "tools": ["agent", "python", "command", "mcp"], "mcp": "先 list_connectors、list_connector_operations 和 inspect_connector_operation 发现真实能力。execution={tool:mcp,connectorId,operation,arguments}；outputs 的 kind=value、pointer 为指向响应的 JSON Pointer（/payload 为业务数据，/links 为链接列表，/result 为原始结果）。完整步骤输出引用保留原始类型。MCP execution.forEach 可完整引用 JSON 数组，arguments 用 ${item} 或 ${item.字段} 逐项绑定；value 输出按项汇总数组，空输入产生空数组且不调用。Python/命令步骤的 outputs 可用 kind=json，仍写 path 文件，平台解析 JSON 后传递原始数据。数据产出自动保存 JSON 供查看，不是本机文件路径；旧文件产出保持不变。", "pythonContext": "Python 脚本从 os.environ['LOOPS_CONTEXT'] 读取 JSON，字段 inputs、outputs、workspace、bundle、scripts、resources、failure、checks；不要写死本次路径。inputs 只包含本步骤 inputs 映射后的值；outputs 只包含本步骤声明的文件路径，不支持目录产出。checks 是执行器已经运行的真实命令记录列表，每项包含 stage、command、exitCode、output、expectedExitCode、passed；passed 表示退出码符合预期，因此验证预期失败（expectedExitCode=1）时 exitCode=1 且 passed=true。报告直接读取这些记录，不把预期退出码当作运行结果。可修改仓库是 workspace；resources 中的文件资源是原始只读资料，model 资源是无凭证的模型元数据。bundle 是本次运行的固定版本包；scripts 是声明脚本名到固定绝对路径的映射，校验代码直接使用这些路径，不在 workspace 重建。", "references": "${inputs.ID}、${resources.ID}、${steps.ID.outputs.ID}、${workspace}、${bundle}、${failure}、${checks}；任务指令、执行配置与 checks 支持引用。resources 的文件资源为原始资料路径，model 资源为模型元数据；选择 Git 资料时自动建立独立 workspace，代码修改在 workspace 中执行。", "agent": "需要自主使用工具的步骤使用 tool=agent，省略 agentId 使用 config.defaultAgentId；员工指定某步骤使用其他客户端时填写 agentId。客户端不可用时告知用户，不自动替换。模型优先级为 execution.model、config.agentModels[agentId]、客户端条目的 defaultModel。execution.reasoning 或 config.agentReasoning[agentId] 可指定思考强度，取 models[].reasoningLevels 中的值。用户未要求时不填写模型或强度覆盖。instructions 为任务指令；execution.session 相同且工作目录相同则共享会话；mode 可为 write 或 read-only；只读时可用 responseOutput 将最终回复保存到指定产出 ID。", "commands": "command 支持 forEach 完整引用 JSON 数组，参数用 ${item} 或 ${item.字段}，空数组不执行。value 产出声明 source=stdout、format=json，pointer 可选；单次输出原始 JSON，逐项输出数组。timeoutSeconds 默认 180 秒。effect=read 仅用于确认只读的命令；省略按 write，发起后不自动重放。命令使用程序和参数数组；cwd 默认本次 workspace；Python 使用 python；声明脚本使用 ${bundle}/scripts/name.py；旧的 scripts/name.py 与 ${workspace}/scripts/name.py 参数也会解析到同一固定版本脚本。checks 的 expectedExitCode 默认 0，可以用 1 验证修复前失败。"}}
         elif method == "read_project":
             loop = self.store.get(loop_id)
             selected = resources(loop["config"])
             resource = next((item for item in selected if item["id"] == params.get("resourceId")), None) if params.get("resourceId") else next((item for item in selected if item["kind"] in {"directory", "git"}), None)
-            if not resource:
+            if not resource or resource['kind'] == 'model':
                 raise ValueError("请先选择项目资料。")
             root = Path(resource["path"]).resolve()
             path = (root / params["path"]).resolve()
@@ -176,11 +214,13 @@ class Service:
             from .definition import validate
             from .workflow_connectors import bind_connectors
             definition = validate(params['definition'], self.store.get(loop_id)['config'])
+            await self.validate_models(definition, self.store.get(loop_id)['config'])
             value = self.store.update_definition(loop_id, await bind_connectors(definition, self.connectors))
         elif method == "save":
             from .workflow_connectors import bind_connectors
             loop = self.store.get(loop_id)
             if loop['definition']:
+                await self.validate_models(loop['definition'], loop['config'])
                 definition = await bind_connectors(loop['definition'], self.connectors)
                 if definition != loop['definition']:
                     self.store.update_definition(loop_id, definition)
@@ -188,11 +228,12 @@ class Service:
         elif method == "start":
             value = self.runner.start(loop_id, params.get("inputs"))
         elif method == "script":
+            from .definition import script_source
             loop = self.store.get(loop_id)
             source = (loop.get("definition") or {}).get("scripts", {}).get(params["path"])
             if source is None:
                 raise ValueError("流程中未保存该脚本。")
-            return {"title": params["path"], "content": source}
+            return {"title": params["path"], "content": script_source(loop['definition'], loop['config'], params['path'])}
         elif method == "stop":
             value = self.runner.stop(loop_id, params["runId"])
         elif method == "message":
@@ -247,7 +288,9 @@ async def main():
     root = os.environ.get("LOOPS_DATA_DIR")
     if not root:
         raise RuntimeError("LOOPS_DATA_DIR is required")
-    service = Service(root, workspace_root=os.environ.get("LOOPS_WORKSPACE_ROOT"))
+    from .model_host import ModelHost
+    model_host = ModelHost(output)
+    service = Service(root, workspace_root=os.environ.get("LOOPS_WORKSPACE_ROOT"), model_host=model_host)
     async def respond(request):
         try:
             result = await service.handle(request["method"], request.get("params", {}))
@@ -258,6 +301,9 @@ async def main():
     while line := await asyncio.to_thread(sys.stdin.readline):
         try:
             request = json.loads(line)
+            if 'hostResponse' in request:
+                model_host.receive(request)
+                continue
             task = asyncio.create_task(respond(request))
             pending.add(task)
             task.add_done_callback(pending.discard)

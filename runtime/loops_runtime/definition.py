@@ -1,4 +1,5 @@
 import copy
+import json
 import re
 from pathlib import PurePosixPath
 
@@ -9,6 +10,25 @@ from .agent_clients import validate_agent_id, validate_model
 TOOLS = {"agent": "Agent", "codex": "Codex", "python": "Python", "command": "命令行", "mcp": "MCP"}
 IDENTIFIER = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
 REFERENCE = re.compile(r"\$\{([^{}]+)\}")
+
+
+def validate_model_resource(resource):
+    fields = {'id', 'kind', 'label', 'modelId', 'provider', 'model', 'baseUrl'}
+    if set(resource) - fields or any(not isinstance(resource.get(key), str) or not resource[key].strip()
+                                   or len(resource[key]) > 300 or '${' in resource[key]
+                                   for key in ('id', 'label', 'modelId', 'provider', 'model')):
+        raise ValueError('模型资源需要明确的模型配置标识、供应商和模型名称，不能包含凭证或其他字段。')
+    if 'baseUrl' in resource:
+        from urllib.parse import urlsplit
+        if not isinstance(resource['baseUrl'], str):
+            raise ValueError('模型 API 地址必须是文本。')
+        url = urlsplit(resource['baseUrl'])
+        if url.username or url.password or url.query or url.fragment or not url.hostname or not (url.scheme == 'https' or url.scheme == 'http' and url.hostname in {'localhost', '127.0.0.1', '::1'}):
+            raise ValueError('模型 API 地址无效，不能包含凭证。')
+
+
+def script_source(definition, config, name):
+    return definition['scripts'][name]
 
 
 def script_path(value):
@@ -27,6 +47,9 @@ def validate(value, config):
     if any(not isinstance(value.get(key), str) or not value[key].strip() for key in ("title", "goal", "completion")):
         raise ValueError("流程需要名称、目标和交付标准。")
     inputs, steps, scripts = value.get("inputs", []), value.get("steps", []), value.get("scripts", {})
+    model_resources = {item['id']: item for item in config.get('resources', []) if item.get('kind') == 'model'}
+    for resource in model_resources.values():
+        validate_model_resource(resource)
     if not isinstance(inputs, list) or not isinstance(steps, list) or not steps or not isinstance(scripts, dict):
         raise ValueError("流程至少需要一个步骤。")
     for name, source in scripts.items():
@@ -78,6 +101,13 @@ def validate(value, config):
             raise ValueError("Agent 会话名称不能为空。")
         if tool == "python" and execution.get("script") not in scripts:
             raise ValueError("Python 步骤需要引用本流程保存的脚本。")
+        if 'models' in execution:
+            raise ValueError('模型调用名绑定已移除，请改用 Python args 中的 --model 和 --reasoning 参数并更新脚本。')
+        if tool == 'python':
+            from .workflow_models import model_parameters
+            selection = model_parameters(execution)
+            if selection and selection['resourceId'] not in model_resources:
+                raise ValueError('Python --model 参数引用了未登记的模型资源。')
         if tool == "command":
             validate_command(execution.get("command"))
             if execution.get('effect', 'write') not in {'read', 'write'}:
@@ -165,10 +195,10 @@ def validate_command(command):
         raise ValueError("命令需要有效的程序和参数数组。")
 
 
-def write_bundle(directory, definition):
+def write_bundle(directory, definition, config=None):
     for name, source in definition.get("scripts", {}).items():
         if not script_path(name):
             raise ValueError("无效的脚本路径。")
         target = directory / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(source)
+        target.write_text(script_source(definition, config, name) if config is not None else source)

@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from .agent_clients import validate_agent_id, validate_model, initial_agent_id
-from .definition import IDENTIFIER, validate, write_bundle
+from .definition import IDENTIFIER, validate, validate_model_resource, write_bundle
 
 
 ACTIVE = {"queued", "running", "correcting", "stopping"}
@@ -56,6 +56,9 @@ class Store:
                     for call in run.get('commandCalls', []):
                         if call.get('status') == 'started':
                             call.update(status='interrupted', outcome='unknown', endedAt=now())
+                    for call in run.get('modelCalls', []):
+                        if call.get('status') == 'running':
+                            call.update(status='interrupted', endedAt=now())
                     changed = True
             if changed:
                 self.put(loop)
@@ -117,15 +120,18 @@ class Store:
         ids = set()
         for resource in resources:
             key = resource.get("id", "")
-            path = Path(resource.get("path", "")).expanduser().resolve()
-            if not IDENTIFIER.fullmatch(key) or key in ids or not resource.get("label") or resource.get("kind") not in {"file", "directory", "git"}:
+            if not IDENTIFIER.fullmatch(key) or key in ids or not resource.get("label") or resource.get("kind") not in {"file", "directory", "git", "model"}:
                 raise ValueError("资料需要唯一标识、名称和有效类型。")
+            ids.add(key)
+            if resource['kind'] == 'model':
+                validate_model_resource(resource)
+                continue
+            path = Path(resource.get("path", "")).expanduser().resolve()
             if not path.exists() or (resource["kind"] == "file") != path.is_file() or any(part.startswith(".env") or part in {".ssh", ".codex"} for part in path.parts):
                 raise ValueError("请选择可用的普通文件或文件夹。")
             if resource["kind"] == "git" and not (path / ".git").exists():
                 raise ValueError("Git 资料需要有效的本地仓库。")
             resource["path"] = str(path)
-            ids.add(key)
         if sum(item["kind"] == "git" for item in resources) > 1:
             raise ValueError("当前每个 Loop 支持一个独立 Git 工作区。")
         configuration = {"resources": resources, "inputDefaults": copy.deepcopy(values.get("inputDefaults", {})),
@@ -148,8 +154,10 @@ class Store:
         loop["config"] = configuration
         return self.put(loop)
 
-    def update_definition(self, loop_id, definition):
+    def update_definition(self, loop_id, definition, config=None):
         loop = self.get(loop_id)
+        if config is not None:
+            loop['config'] = copy.deepcopy(config)
         loop["definition"] = validate(definition, loop["config"])
         loop["revision"] += 1
         loop["title"] = loop.get("userTitle") or definition["title"].strip()
@@ -157,7 +165,7 @@ class Store:
         draft.mkdir(exist_ok=True)
         (draft / "loop.json").write_text(json.dumps(loop["definition"], ensure_ascii=False, indent=2))
         (draft / "workflow.py").write_text(workflow_source(loop["definition"]))
-        write_bundle(draft, loop["definition"])
+        write_bundle(draft, loop["definition"], loop['config'])
         return self.put(loop)
 
     def save(self, loop_id):
@@ -171,7 +179,7 @@ class Store:
         snapshot = {"revision": loop["revision"], "definition": loop["definition"], "config": loop["config"], "savedAt": now()}
         (destination / "loop.json").write_text(json.dumps(snapshot, ensure_ascii=False, indent=2))
         (destination / "workflow.py").write_text(workflow_source(loop["definition"]))
-        write_bundle(destination, loop["definition"])
+        write_bundle(destination, loop["definition"], loop['config'])
         loop["savedRevision"] = loop["revision"]
         loop["versions"].append({"revision": loop["revision"], "path": str(destination), "savedAt": snapshot["savedAt"]})
         return self.put(loop)

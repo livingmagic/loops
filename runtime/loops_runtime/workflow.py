@@ -56,7 +56,7 @@ def create_run(store, loop, values, snapshot=None):
             evidence[key] = {"name": item["label"], "value": value}
     (directory / "definition.json").write_text(json.dumps(definition, ensure_ascii=False, indent=2))
     (directory / "workflow.py").write_text(workflow_source(definition))
-    write_bundle(directory, definition)
+    write_bundle(directory, definition, loop['config'])
     run = {"id": directory.name, "number": len(loop["runs"]) + 1, "revision": loop["revision"],
            "mode": "run" if loop["savedRevision"] == loop["revision"] else "trial", "definition": definition,
            "config": copy.deepcopy(loop["config"]), "inputs": inputs, "inputEvidence": evidence,
@@ -118,7 +118,7 @@ class Workflow:
             self.workspace.mkdir()
         self.c.repo = self.workspace
         for item in resources(self.c.run["config"]):
-            self.values["resources"][item["id"]] = item["path"]
+            self.values["resources"][item["id"]] = copy.deepcopy(item) if item['kind'] == 'model' else item["path"]
 
     def command_arguments(self, command):
         # Declared Loop scripts belong to the immutable run bundle, not to a
@@ -136,8 +136,8 @@ class Workflow:
             raise ValueError('命令需要有效的程序和参数数组。')
         return resolved
 
-    async def command(self, command, cwd, env, expected=0, label="执行命令"):
-        result = await self.c.command(self.command_arguments(command), cwd=cwd, check=False, env=env)
+    async def command(self, command, cwd, env, expected=0, label="执行命令", rpc=None):
+        result = await self.c.command(self.command_arguments(command), cwd=cwd, check=False, env=env, **({'rpc': rpc} if rpc else {}))
         result.update(kind="condition", label=label, stage=self.c.stage_id, expectedExitCode=expected, passed=result["exitCode"] == expected)
         self.values["checks"].append(result)
         self.c.store.update_run(self.c.loop_id, self.c.run_id, checks=self.values["checks"])
@@ -313,7 +313,7 @@ class Workflow:
                     self.c.emit(kind, text, **{**extra, 'agentId': agent_id, 'sessionKey': json.dumps(session_key)})
                 session = (self.c.session_factory(cwd, emit) if self.c.session_factory else
                            self.c.agent_clients.session(binding, cwd, emit,
-                               read_paths=[self.directory / 'inputs', self.directory / 'scripts', *self.values['resources'].values()]))
+                               read_paths=[self.directory / 'inputs', self.directory / 'scripts', *(item['path'] for item in resources(self.c.run['config']) if item['kind'] != 'model')]))
                 self.sessions[session_key] = await stack.enter_async_context(session)
             delivery = ('请在最终回复中直接返回产出正文，平台负责保存为指定产出文件。不要尝试写入文件，也不要用完成说明代替正文。'
                         if execution.get('responseOutput') else '按约定将产出写入指定路径。')
@@ -324,7 +324,12 @@ class Workflow:
                     raise ValueError("回复保存位置需要引用本步骤产出标识。")
                 Path(outputs[execution["responseOutput"]]).write_text(answer)
         elif tool == "python":
-            await self.command([sys.executable, str(self.directory / execution["script"]), *execution.get("args", [])], cwd, env, label=step["label"])
+            if step['id'] in self.c.run.get('modelSelections', {}):
+                from .workflow_models import call_model
+                argv = [sys.executable, str(Path(__file__).with_name('model_worker.py')), str(self.directory / execution['script']), *execution.get('args', [])]
+                await self.command(argv, cwd, env, label=step['label'], rpc=lambda message: call_model(self.c, step, message))
+            else:
+                await self.command([sys.executable, str(self.directory / execution["script"]), *execution.get("args", [])], cwd, env, label=step["label"])
         else:
             await self.command_step(step, execution, cwd, env, outputs)
         for check in step.get("checks", []):
@@ -417,6 +422,8 @@ class Workflow:
                 self.c.store.update_run(self.c.loop_id, self.c.run_id, **self.artifact_state(definition))
                 self.c.emit("correction", f"根据失败证据返回：{definition['steps'][index]['label']}")
         report = {"summary": "流程已完成，所有步骤产出与完成条件均已检查。", "completion": definition["completion"], "steps": self.results, "checks": self.values["checks"], "input": self.c.run["input"]}
+        if self.c.run.get('modelCalls'):
+            report['modelCalls'] = self.c.run['modelCalls']
         path = self.directory / "execution.json"
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2))
         self.artifacts[str(path)] = {"title": "执行与检查记录", "path": str(path)}

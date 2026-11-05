@@ -6,6 +6,7 @@ import { EventEmitter } from 'node:events';
 import { Engine } from './engine.mjs';
 import { converse } from './agent.mjs';
 import { ModelSettings } from './models.mjs';
+import { WorkflowModels } from './workflow-models.mjs';
 import os from 'node:os';
 import { draftAutomation, converseAutomation } from './automation-agent.mjs';
 import { modelFailureMessage } from './model-errors.mjs';
@@ -14,7 +15,7 @@ import { ConnectorDescriptions } from './connector-descriptions.mjs';
 export class Host extends EventEmitter {
   constructor(options) {
     super();
-    this.options = options; this.models = new ModelSettings(options); this.engine = new Engine(options); this.busy = new Map(); this.deleting = new Set(); this.automationJobs = new Map(); this.automationStreams = new Map();
+    this.options = options; this.models = new ModelSettings(options); this.engine = new Engine({ ...options, modelHost: new WorkflowModels(this.models) }); this.busy = new Map(); this.deleting = new Set(); this.automationJobs = new Map(); this.automationStreams = new Map();
     this.loopJobs = new Map();
     this.failureReviews = new FailureReviews({
       busy: id => this.busy.has(id) || this.deleting.has(id),
@@ -129,6 +130,7 @@ export class Host extends EventEmitter {
     const allowed = new Set(['agent_clients', 'agent_selection', 'agent_model_default', 'agent_model_selection', 'list', 'trash', 'restore', 'rename', 'new', 'configure', 'fixture', 'save', 'start', 'stop', 'artifact', 'commands', 'script', 'automation_list', 'automation_get', 'automation_save', 'automation_enable', 'automation_sample', 'automation_run', 'automation_retry', 'automation_stop', 'automation_delete', 'automation_trash', 'automation_restore', 'automation_file']);
     allowed.add('automation_catalog');
     allowed.add('automation_test_output');
+    allowed.add('step_model_selection');
     const automationKey = `automation:${params.taskId}`;
     if (method === 'automation_get') return { ...await this.engine.call(method, params), chatBusy: this.busy.has(automationKey), chatText: this.automationStreams.get(automationKey) || '' };
     if (method === 'automation_cancel_chat') {
@@ -170,7 +172,7 @@ export class Host extends EventEmitter {
       try { return await this.engine.call('delete', params); }
       finally { this.deleting.delete(params.loopId); }
     }
-    if (['agent_selection', 'agent_model_selection'].includes(method) && this.busy.has(params.loopId)) throw new Error('请等 Loops AI 回复结束后再修改执行 Agent。');
+    if (['agent_selection', 'agent_model_selection', 'step_model_selection'].includes(method) && this.busy.has(params.loopId)) throw new Error('请等 Loops AI 回复结束后再修改节点设置。');
     if (method === 'model_thinking') return this.models.thinking(params.id, params.level);
     if (method === 'model_save') return this.models.save(params);
     if (method === 'model_default') return this.models.default(params.id);

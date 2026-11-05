@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import json
 import os
 import signal
 import shlex
@@ -17,11 +18,12 @@ class ExecutionError(RuntimeError):
 
 
 class Runner:
-    def __init__(self, store, notify, session_factory=None, connectors=None, agent_clients=None):
+    def __init__(self, store, notify, session_factory=None, connectors=None, agent_clients=None, model_host=None):
         self.store, self.notify, self.session_factory = store, notify, session_factory
         self.tasks = {}
         self.connectors = connectors
         self.agent_clients = agent_clients or AgentClients(store.root)
+        self.model_host = model_host
 
     def start(self, loop_id, inputs=None, snapshot=None):
         loop = self.store.get(loop_id)
@@ -57,7 +59,16 @@ class Runner:
         context = RunContext(self.store, loop_id, run_id, self.notify, self.session_factory)
         context.connectors = self.connectors
         context.agent_clients = self.agent_clients
+        context.model_host = self.model_host
         try:
+            from .workflow_models import selections as model_selections
+            selected = model_selections(context.run['definition'], context.run['config'])
+            if selected:
+                if not self.model_host:
+                    raise ValueError('模型 API 服务未连接，请通过 Loops 客户端运行。')
+                await self.model_host.call('validate', {'bindings': list(selected.values())})
+                context.run['modelSelections'] = selected
+                self.store.update_run(loop_id, run_id, modelSelections=selected)
             if not self.session_factory:
                 bindings = await self.agent_clients.bind(context.run["definition"], context.run["config"])
                 context.run["agentBindings"] = bindings
@@ -116,11 +127,13 @@ class RunContext:
         self.store.update_run(self.loop_id, self.run_id, status=status, reason=reason, endedAt=now(), **extra)
         self.emit("finished", reason or "已完成交付。")
 
-    async def command(self, argv, *, cwd=None, check=True, timeout=180, capture_all=False, env=None, separate_output=False):
+    async def command(self, argv, *, cwd=None, check=True, timeout=180, capture_all=False, env=None, separate_output=False, rpc=None):
+        separate_output = separate_output or rpc is not None
         argv = [sys.executable if value in {"python", "python3"} and index == 0 else value for index, value in enumerate(argv)]
         self.emit("command", shlex.join(argv), stage=self.stage_id)
         process = await asyncio.create_subprocess_exec(*argv, cwd=str(cwd or self.repo), stdout=asyncio.subprocess.PIPE,
                                                        stderr=asyncio.subprocess.PIPE if separate_output else asyncio.subprocess.STDOUT, start_new_session=True,
+                                                       stdin=asyncio.subprocess.PIPE if rpc else None, limit=2_000_000,
                                                        env=command_environment() if env is None else env)
         buffers = {'stdout': bytearray(), 'stderr': bytearray()}
         overflow = asyncio.get_running_loop().create_future()
@@ -133,8 +146,19 @@ class RunContext:
                         overflow.set_result(ExecutionError('命令标准输出超过 8 MiB，请改用文件产出。'))
                 if name == 'stderr' and len(buffers[name]) > 12000:
                     del buffers[name][:-12000]
+        async def exchange():
+            while line := await process.stdout.readline():
+                if len(line) > 1_000_000:
+                    raise ExecutionError('模型请求过大。')
+                message = json.loads(line)
+                try:
+                    response = {'result': await rpc(message)}
+                except Exception as error:
+                    response = {'error': str(error)}
+                process.stdin.write((json.dumps(response, ensure_ascii=False) + '\n').encode())
+                await process.stdin.drain()
         async def collect():
-            await asyncio.gather(read_stream(process.stdout, 'stdout'), read_stream(process.stderr, 'stderr'))
+            await asyncio.gather(exchange() if rpc else read_stream(process.stdout, 'stdout'), read_stream(process.stderr, 'stderr'))
             await process.wait()
         collector = asyncio.create_task(collect()) if separate_output else asyncio.create_task(process.communicate())
         def evidence():

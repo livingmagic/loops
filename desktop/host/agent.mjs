@@ -20,12 +20,12 @@ const definitionSchema = Type.Object({
   finalOutputs: Type.Array(Type.String({ pattern: '^\\$\\{steps\\.[a-zA-Z][a-zA-Z0-9_-]*\\.outputs\\.[a-zA-Z][a-zA-Z0-9_-]*\\}$' }), { uniqueItems: true, description: '最终交付清单，逐项引用 ${steps.步骤ID.outputs.产出ID}；数据产出保留原始类型传递，并由平台保存为 JSON 供查看。无交付时使用空数组。' }),
   scripts: Type.Record(Type.String(), Type.String({ description: '完整 Python 源码；路径为 scripts/name.py。随配置版本保存。' })),
   steps: Type.Array(Type.Object({
-    id: Type.String(), label: Type.String(), instructions: Type.String(),
+    id: Type.String(), label: Type.String(), instructions: Type.String({ description: '说明业务任务与处理规则，不重复 execution 中可调整的参数值。不重复写模型名或思考档位。' }),
     inputs: Type.Record(Type.String(), Type.String({ description: '使用 ${inputs.ID}、${resources.ID}、${steps.ID.outputs.ID} 引用数据；也可传固定文本。可修改的仓库路径使用 ${workspace}；${resources.ID} 是原始只读资料。' })),
     execution: Type.Union([
       Type.Object({ tool: Type.Literal('agent'), reasoning: Type.Optional(Type.String({ description: '用户要求的思考强度，必须来自客户端模型 reasoningLevels。' })), model: Type.Optional(Type.String({ description: '仅用户明确要求时填写客户端模型 ID；省略则继承默认模型。' })), agentId: Type.Optional(Type.String({ description: '省略时继承流程默认执行 Agent；指定时使用 inspect_project 返回的客户端 ID。' })), mode: Type.Literal('read-only'), session: Type.String(), cwd: Type.Optional(Type.String()), responseOutput: Type.Optional(Type.String({ description: '把最终回复正文保存为此产出文件，仅只读模式使用' })) }, { additionalProperties: false }),
       Type.Object({ tool: Type.Literal('agent'), reasoning: Type.Optional(Type.String({ description: '用户要求的思考强度，必须来自客户端模型 reasoningLevels。' })), model: Type.Optional(Type.String({ description: '仅用户明确要求时填写客户端模型 ID；省略则继承默认模型。' })), agentId: Type.Optional(Type.String({ description: '省略时继承流程默认执行 Agent；指定时使用 inspect_project 返回的客户端 ID。' })), mode: Type.Literal('write'), session: Type.String(), cwd: Type.Optional(Type.String()) }, { additionalProperties: false }),
-      Type.Object({ tool: Type.Literal('python'), script: Type.String(), args: Type.Optional(command), cwd: Type.Optional(Type.String()) }),
+      Type.Object({ tool: Type.Literal('python'), script: Type.String(), args: Type.Optional(Type.Array(Type.String(), { description: '脚本命令行参数。调用模型时填 ["--model", add_model_resource 返回的 id, "--reasoning", 支持的 thinkingLevels 值]，关闭思考为 off；不使用调用名绑定。脚本用 argparse 读取这两个必填参数，再 from loops_ai import complete; text = complete(prompt, model=args.model, reasoning=args.reasoning, system="", max_tokens=2048)，同步返回正文。密钥由宿主读取。' })), cwd: Type.Optional(Type.String()) }, { additionalProperties: false }),
       Type.Object({ tool: Type.Literal('command'), command, cwd: Type.Optional(Type.String()), forEach: Type.Optional(Type.String({ description: '完整引用 JSON 数组；command 参数用 ${item} 或 ${item.字段}，逐项顺序执行，空数组不执行。' })), effect: Type.Optional(Type.Union([Type.Literal('read'), Type.Literal('write')], { description: '确认无写入才声明 read；省略按 write，发起后不自动重试或重放。' })), timeoutSeconds: Type.Optional(Type.Number({ minimum: 0.001, maximum: 1200 })) }),
       Type.Object({ tool: Type.Literal('mcp'), connectorId: Type.String(), operation: Type.String(), forEach: Type.Optional(Type.String({ description: '完整引用前序步骤的 JSON 数组。对每一项顺序调用工具；arguments 内用 ${item} 或 ${item.字段} 取当前项。空数组不调用，所有 value 输出均为数组；每项 pointer 从各自响应选取后汇总。' })), arguments: Type.Record(Type.String(), Type.Unknown({ description: '按工具 inputSchema 填写；完整引用 ${steps.ID.outputs.ID} 保留对象、数组、数字等原始类型。' })) }, { additionalProperties: false }),
     ]),
@@ -39,10 +39,20 @@ const definitionSchema = Type.Object({
   }), { minItems: 1 }),
 });
 const result = (details) => ({ content: [{ type: 'text', text: JSON.stringify(details) }], details });
+// Mutations acknowledge the persisted contract; inspect_project remains the full read path.
+const loopSummary = loop => ({ id: loop.id, title: loop.title, revision: loop.revision, savedRevision: loop.savedRevision,
+  inputs: loop.definition.inputs.map(({ id, label, kind, required }) => ({ id, label, kind, required })),
+  outputs: loop.definition.finalOutputs.map(ref => {
+    const [, stepId, outputId] = ref.match(/^\$\{steps\.([^.]+)\.outputs\.([^.]+)\}$/);
+    const output = loop.definition.steps.find(step => step.id === stepId).outputs.find(output => output.id === outputId);
+    return { label: output.label, kind: output.kind || 'file' };
+  }) });
 
 export function builderTools(engine, loopId, signal) {
   const tool = (name, description, parameters, execute) => ({ name, label: description, description, parameters, executionMode: 'sequential', execute: async (_id, args) => result(await execute(args)) });
   return [
+    tool('list_models', '查看已配置的模型 API 资源及支持的思考强度；不返回密钥', Type.Object({}), () => engine.call('model_catalog')),
+    tool('add_model_resource', '将已配置的 API 模型登记为本流程资源，返回 resourceId 所需的 id 及支持的思考强度', Type.Object({ modelId: Type.String({ description: 'list_models 返回的模型配置 id，不是供应商的模型名称。' }) }), args => engine.call('add_model_resource', { loopId, ...args })),
     tool('list_connectors', '发现用户添加的 MCP 服务；只返回连接状态和能力简介，不执行业务操作', Type.Object({}), async () => (await engine.call('connector_list')).filter(item => item.manifest.type === 'mcp').map(({ manifest, enabled, status, tools }) => ({ id: manifest.id, name: manifest.name, description: manifest.description, enabled, status, operationCount: tools?.length || 0 }))),
     tool('list_connector_operations', '查询 MCP 操作索引；按任务检索，完整参数用 inspect_connector_operation 查看', Type.Object({ connectorId: Type.String(), query: Type.Optional(Type.String()), offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })) }), args => engine.call('connector_operations', args)),
     tool('inspect_connector_operation', '读取 MCP 操作参数、返回格式和读写影响，不执行业务操作', Type.Object({ connectorId: Type.String(), operation: Type.String() }), args => engine.call('connector_describe', args)),
@@ -53,7 +63,7 @@ export function builderTools(engine, loopId, signal) {
     tool('inspect_project', '读取已选资料、文件清单、可用执行能力及当前流程配置', Type.Object({}), () => engine.call('inspect', { loopId })),
     tool('read_project_file', '读取已选资料目录内的普通文件', Type.Object({ path: Type.String(), resourceId: Type.Optional(Type.String()) }), (args) => engine.call('read_project', { loopId, ...args })),
     tool('read_input', '读取项目资料中已登记的文件输入，不允许任意文件', Type.Object({ path: Type.Optional(Type.String({ description: '已登记输入的路径；省略时读取默认输入。' })) }), (args) => engine.call('read_input', { loopId, ...args })),
-    tool('update_loop', '创建或更新完整通用流程配置与脚本；步骤数量、执行工具和纠正去向由任务决定', Type.Object({ definition: definitionSchema }), ({ definition }) => engine.call('definition', { loopId, definition })),
+    tool('update_loop', '创建或更新完整通用流程配置与脚本；步骤数量、执行工具和纠正去向由任务决定', Type.Object({ definition: definitionSchema }), async ({ definition }) => loopSummary(await engine.call('definition', { loopId, definition }))),
     tool('get_run_result', '查看最近试跑的真实证据；执行中最多等待 45 秒，完成或失败立即返回', Type.Object({}), async () => {
       const deadline = Date.now() + 45_000;
       while (true) {
@@ -67,7 +77,7 @@ export function builderTools(engine, loopId, signal) {
       }
     }),
     tool('start_trial', '启动真实试跑；省略输入时使用项目资料中的默认值', Type.Object({ inputs: Type.Optional(Type.Record(Type.String(), Type.String())) }), (args) => engine.call('start', { loopId, ...args })),
-    tool('save_loop', '在员工要求保存时保存当前定义和执行脚本', Type.Object({}), () => engine.call('save', { loopId })),
+    tool('save_loop', '在员工要求保存时保存当前定义和执行脚本', Type.Object({}), async () => loopSummary(await engine.call('save', { loopId }))),
   ];
 }
 

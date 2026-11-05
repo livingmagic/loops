@@ -6,7 +6,7 @@
 
 finalOutputs 是必填的最终交付清单，每项为 `${steps.步骤ID.outputs.产出ID}`，引用已经声明的节点产出。Loops AI 根据员工目标选择，可以引用任意步骤的产出；无文件交付时明确使用空数组。错误引用与重复引用会被拒绝，已存储但缺少清单的定义也不能启动。界面的“输入和输出”和交付文件都以此为准，中间文件与执行记录保留在执行详情。校验仍由各节点执行，不增加独立总体验收。
 
-引用支持 `${inputs.ID}`、`${resources.ID}`、`${steps.ID.outputs.ID}`、`${workspace}`、`${failure}`、`${checks}`。前序输出必须先成功产生才能被引用；任务指令中的引用也会展开。固定资料统一使用 config.resources，默认输入使用 config.inputDefaults，启动时按输入 ID 提供 inputs 对象。普通流程使用独立空工作区，Git 资料通过独立 worktree 提供可修改的 workspace；resources 始终指向原始资料。
+引用支持 `${inputs.ID}`、`${resources.ID}`、`${steps.ID.outputs.ID}`、`${workspace}`、`${failure}`、`${checks}`。前序输出必须先成功产生才能被引用；任务指令中的引用也会展开。固定资料统一使用 config.resources，默认输入使用 config.inputDefaults，启动时按输入 ID 提供 inputs 对象。普通流程使用独立空工作区，Git 资料通过独立 worktree 提供可修改的 workspace；resources 的文件资源始终指向原始资料，model 资源提供不含凭证的模型元数据。
 
 执行工具：
 
@@ -24,6 +24,43 @@ onFailure.action 可为 stop、retry、goto；goto 使用 target 指定步骤，
 本版本提供顺序步骤与有次数上限的失败回退。工具调用按定义执行；步骤完成条件应反映真实业务验收。模型生成的脚本仍需通过真实试跑验证，保存不等于已经验证。
 
 Python、直接命令和完成检查仅继承 PATH、HOME、临时目录、语言、时区及基础系统变量，另加 LOOPS_CONTEXT；不自动传递主进程中的 API 密钥、代理设置、PYTHONPATH 或其他自定义环境变量。依赖这些变量的旧脚本需要调整。该限制不隔离文件访问或网络，Codex 仍按自身登录与沙箱机制运行。
+
+## Python 节点使用模型 API
+
+简单的分类、提取、摘要和改写可以直接由 Python 调用模型 API。先在设置中配置模型；搭建工具 `list_models` 返回实际模型目录、配置状态和支持的思考强度，`add_model_resource(modelId)` 将模型登记到当前 Loop 的 `config.resources`。资源类型为 `model`，固定模型配置 ID、供应商、API 模型名及自定义服务地址，不保存凭证。API 模型资源与 Agent 客户端的执行模型分别配置。
+
+Python 直接通过命令行参数选择模型，不使用调用名绑定。`execution.args` 是唯一的参数来源：`--model` 为已登记模型资源 ID，`--reasoning` 为该模型支持的思考强度，关闭思考也需明确 `off`。两个参数各出现一次，参数名和值使用独立数组项。
+
+```json
+{
+  "tool": "python",
+  "script": "scripts/extract.py",
+  "args": ["--model", "model-a1b2c3d4e5f6", "--reasoning", "off"]
+}
+```
+
+```python
+import argparse
+import json
+import os
+from pathlib import Path
+from loops_ai import complete
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--model", required=True)
+parser.add_argument("--reasoning", required=True)
+args = parser.parse_args()
+context = json.loads(os.environ["LOOPS_CONTEXT"])
+text = complete(context["inputs"]["text"], model=args.model,
+                reasoning=args.reasoning, system="提取文本要点，保留原意。", max_tokens=2048)
+Path(context["outputs"]["result"]).write_text(text)
+```
+
+`complete(prompt, *, model, reasoning, system='', max_tokens=2048)` 同步返回正文。不支持工具调用；空响应、长度截断及 API 失败会报错。输出长度为 1–32768，仍受供应商上限约束。节点沿用 180 秒进程超时，整个运行上限 20 分钟；取消或超时会结束子进程并取消 API 请求。SDK 由带模型参数的 Python 节点注入，无需额外安装；普通命令和完成检查没有模型通道。调用的模型和强度必须与启动参数一致。
+
+节点详情的“模型资源”直接修改 `execution.args` 中的这两个参数，生成未保存的新版本，其他脚本参数与源码保持不变。脚本预览与运行使用同一份源码，不自动添加配置注释。运行记录保留 `modelSelections`、每次调用的 `modelCalls` 状态与实际 token 用量；不记录思考过程、密钥或请求正文。
+
+模型资源、参数和脚本随版本与运行快照固定。修改节点不影响历史运行或自动化任务已绑定版本。模型配置被移除或供应商、模型名、API 地址已改变时明确失败，要求重新选择模型，不自动切换。密钥仅由客户端从本机安全配置读取，不进入 Python 参数或环境变量。开发期旧 `execution.models` 定义需重新搭建；历史文件和运行记录保留。
 
 ## 本机 Agent 客户端
 
