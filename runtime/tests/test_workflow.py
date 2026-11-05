@@ -184,7 +184,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
             try:
                 self.assertFalse(store.workspace_root.exists())
                 default = store.new()
-                self.assertEqual(Path(default["workdir"]).parent, Path(self.temp.name) / "home" / "Loops")
+                self.assertEqual(Path(default["workdir"]).parent, (Path(self.temp.name) / "isolated-db/workspaces").resolve())
             finally:
                 store.db.close()
 

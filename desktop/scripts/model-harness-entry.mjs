@@ -1,7 +1,11 @@
 import { app } from 'electron';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import path from 'node:path';
-app.setName('loops-desktop');
+import fs from 'node:fs';
+app.setName('Loops');
+const dataDirectory = fileURLToPath(new URL('../.local/model-harness/', import.meta.url));
+fs.mkdirSync(dataDirectory, { recursive: true });
+app.setPath('userData', dataDirectory);
 const target = path.resolve(process.argv[2]);
 process.argv = [process.argv[0], target, ...process.argv.slice(3)];
 app.whenReady().then(() => import(pathToFileURL(target).href)).catch(() => {
