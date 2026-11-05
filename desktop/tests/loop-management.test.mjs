@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { builderTools } from '../host/agent.mjs';
 import { Host } from '../host/service.mjs';
 
 test('fresh startup creates no Loop or workspace; only a nonempty submitted requirement creates one', async () => {
@@ -45,6 +46,43 @@ test('host deletes and restores a Loop through the real service without losing i
     const restored = await host.action('restore', { loopId: loop.id });
     assert.deepEqual(restored, loop);
     assert.equal(await fs.readFile(file, 'utf8'), 'preserved');
+  } finally { await host.close(); await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('version APIs cross the host boundary and block changes during a conversation', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'loops-versions-host-'));
+  const host = new Host({ dataDirectory: directory, workspaceRoot: path.join(directory, 'workspaces'), configDirectory: directory });
+  try {
+    const loop = await host.action('new');
+    const definition = { schemaVersion: 2, title: '报告', goal: '第一版', completion: '文件存在', inputs: [], scripts: { 'scripts/report.py': "import json,os\nfrom pathlib import Path\nc=json.loads(os.environ['LOOPS_CONTEXT'])\nPath(c['outputs']['file']).write_text('report')" }, finalOutputs: ['${steps.report.outputs.file}'],
+      steps: [{ id: 'report', label: '生成报告', instructions: '生成报告', inputs: {}, execution: { tool: 'python', script: 'scripts/report.py' }, outputs: [{ id: 'file', label: '报告', path: 'report.txt' }], checks: [] }] };
+    async function trialAndSave() {
+      await host.action('start', { loopId: loop.id });
+      const result = await builderTools(host.engine, loop.id).find(tool => tool.name === 'get_run_result').execute('trial', {});
+      assert.equal(result.details.status, 'success', result.details.reason);
+      await host.action('save', { loopId: loop.id });
+    }
+    await host.engine.call('definition', { loopId: loop.id, definition });
+    await trialAndSave();
+    await host.engine.call('definition', { loopId: loop.id, definition: { ...definition, goal: '第二版' } });
+    await trialAndSave();
+    const original = await host.action('version', { loopId: loop.id, revision: 1 });
+    assert.equal(original.definition.goal, '第一版');
+    const task = await host.action('automation_save', { spec: { title: '版本测试', source: { lifecycle: 'once', script: 'def sample(ctx):\n    ctx.emit("one", {})\ndef run(ctx):\n    sample(ctx)\n', config: {} }, nodes: [{ id: 'report', loopId: loop.id, revision: 1, bindings: {} }], outputs: [] } });
+    host.busy.set(loop.id, new AbortController());
+    await assert.rejects(host.action('restore_version', { loopId: loop.id, revision: 1 }), /回复结束/);
+    await assert.rejects(host.action('save', { loopId: loop.id }), /回复结束/);
+    host.busy.delete(loop.id);
+    host.busy.set(`automation:${task.id}`, new AbortController());
+    await assert.rejects(host.action('automation_set_loop_version', { taskId: task.id, nodeId: 'report', revision: 2 }), /回复结束/);
+    host.busy.delete(`automation:${task.id}`);
+    const draft = await host.action('automation_set_loop_version', { taskId: task.id, nodeId: 'report', revision: 2 });
+    assert.equal(draft.spec.nodes[0].revision, 1);
+    assert.equal(draft.draftSpec.nodes[0].revision, 2);
+    const restored = await host.action('restore_version', { loopId: loop.id, revision: 1, expectedRevision: 2 });
+    assert.equal(restored.revision, 3);
+    assert.equal(restored.savedRevision, 2);
+    assert.equal(restored.definition.goal, '第一版');
   } finally { await host.close(); await fs.rm(directory, { recursive: true, force: true }); }
 });
 

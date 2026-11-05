@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
+import { builderTools } from '../host/agent.mjs';
 import { Engine } from '../host/engine.mjs';
 import { Host } from '../host/service.mjs';
 import { converseAutomation } from '../host/automation-agent.mjs';
@@ -21,7 +22,13 @@ async function loopFixture(engine) {
   const definition = { schemaVersion: 2, title: '文本处理', goal: '读取文本', completion: '文件存在', inputs: [{ id: 'source', label: '原文', kind: 'file', required: true }], finalOutputs: ['${steps.convert.outputs.report}'],
     scripts: { 'scripts/process.py': "import os,json\nfrom pathlib import Path\nc=json.loads(os.environ['LOOPS_CONTEXT']); Path(c['outputs']['report']).write_text(Path(c['inputs']['source']).read_text().upper())" },
     steps: [{ id: 'convert', label: '转换', instructions: '读取文本', inputs: { source: '${inputs.source}' }, execution: { tool: 'python', script: 'scripts/process.py' }, outputs: [{ id: 'report', label: '报告', path: 'report.txt' }], checks: [], onFailure: { action: 'stop', maxAttempts: 0 } }] };
-  await engine.call('definition', { loopId: loop.id, definition }); await engine.call('save', { loopId: loop.id });
+  const source = path.join(loop.workdir, 'trial.txt');
+  await fs.writeFile(source, 'trial input');
+  await engine.call('definition', { loopId: loop.id, definition });
+  await engine.call('start', { loopId: loop.id, inputs: { source } });
+  const result = await builderTools(engine, loop.id).find(tool => tool.name === 'get_run_result').execute('trial', {});
+  assert.equal(result.details.status, 'success', result.details.reason);
+  await engine.call('save', { loopId: loop.id });
   return loop;
 }
 test('multi-turn Pi conversation retains clarification, validates draft and saves only on explicit later turn (provider double)', async () => {

@@ -21,7 +21,7 @@ test('Pi tool calling constructs, corrects and saves a versioned flow through th
     const streamFn = (model) => {
       const index = calls++;
       const stream = createAssistantMessageEventStream();
-      const names = ['inspect_project', 'update_loop', 'save_loop'];
+      const names = ['inspect_project', 'update_loop', 'start_trial', 'get_run_result', 'save_loop'];
       const message = { role: 'assistant', api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),
         content: index < names.length ? [{ type: 'toolCall', id: `call-${index}`, name: names[index], arguments: index === 1 ? { definition } : {} }] : [{ type: 'text', text: '已保存流程。' }],
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: index < names.length ? 'toolUse' : 'stop' };
@@ -33,7 +33,7 @@ test('Pi tool calling constructs, corrects and saves a versioned flow through th
     const process = saved.messages.find(m => m.role === 'process');
     assert.equal(process.process.status, 'success');
     assert(process.process.durationMs >= 0);
-    assert.deepEqual(process.process.events.filter(e => e.type === 'tool').map(e => e.status), ['success','success','success']);
+    assert.deepEqual(process.process.events.filter(e => e.type === 'tool').map(e => e.status), Array(5).fill('success'));
     assert.equal(saved.messages.at(-1).text, '已保存流程。');
     assert.equal(saved.messages.filter(m => m.role === 'assistant').length, 1);
     assert(!JSON.stringify(process).includes('test-only-not-a-key'));

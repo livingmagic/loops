@@ -216,17 +216,24 @@ class Service:
             definition = validate(params['definition'], self.store.get(loop_id)['config'])
             await self.validate_models(definition, self.store.get(loop_id)['config'])
             value = self.store.update_definition(loop_id, await bind_connectors(definition, self.connectors))
+        elif method == "version":
+            return self.store.version(loop_id, params.get("revision"))
+        elif method == "restore_version":
+            value = self.store.restore_version(loop_id, params.get("revision"),
+                expected_revision=params.get("expectedRevision"), discard_draft=params.get("discardDraft") is True)
         elif method == "save":
-            from .workflow_connectors import bind_connectors
             loop = self.store.get(loop_id)
-            if loop['definition']:
-                await self.validate_models(loop['definition'], loop['config'])
-                definition = await bind_connectors(loop['definition'], self.connectors)
-                if definition != loop['definition']:
-                    self.store.update_definition(loop_id, definition)
-            value = self.store.save(loop_id)
+            expected_revision = params.get("expectedRevision", loop["revision"])
+            if loop["definition"]:
+                await self.validate_models(loop["definition"], loop["config"])
+            value = self.store.save(loop_id, expected_revision=expected_revision)
         elif method == "start":
-            value = self.runner.start(loop_id, params.get("inputs"))
+            revision = params.get("revision")
+            snapshot = self.store.version(loop_id, revision) if revision is not None else None
+            expected = params.get("expectedRevision")
+            if snapshot is None and expected is not None and self.store.get(loop_id)["revision"] != expected:
+                raise ValueError("流程已更新，请重新打开试跑。")
+            value = self.runner.start(loop_id, params.get("inputs"), snapshot=snapshot)
         elif method == "script":
             from .definition import script_source
             loop = self.store.get(loop_id)
@@ -243,7 +250,7 @@ class Service:
         elif method == "claim_failure_review":
             loop = self.store.get(loop_id)
             run = loop["runs"][-1] if loop["runs"] else None
-            if not run or run["id"] != params["runId"] or run["status"] != "failed" or run.get("failureReview"):
+            if not run or run["id"] != params["runId"] or run["revision"] != loop["revision"] or run["status"] != "failed" or run.get("failureReview"):
                 return False
             self.store.update_run(loop_id, run["id"], failureReview={"status": "claimed"})
             return True

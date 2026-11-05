@@ -105,9 +105,10 @@ class WorkflowModelsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_adjustment_is_versioned_and_old_saved_snapshot_keeps_model_and_effort(self):
         await self.build()
+        old = await self.execute('first')
+        self.assertEqual(old['status'], 'success', old.get('reason'))
         saved = await self.service.handle('save', {'loopId': self.loop['id']})
         snapshot = json.loads((Path(saved['versions'][0]['path']) / 'loop.json').read_text())
-        old = await self.execute('first')
         changed = await self.service.handle('step_model_selection', {'loopId': self.loop['id'], 'stepId': 'extract', 'modelId': 'other-model', 'reasoning': 'high'})
         self.assertEqual(changed['revision'], saved['revision'] + 1)
         self.assertEqual(changed['savedRevision'], saved['revision'])

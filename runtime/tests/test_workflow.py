@@ -65,8 +65,8 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_variable_inputs_versioned_scripts_and_runs_remain_independent(self):
         built = await self.build(flow())
-        saved = await self.service.handle("save", {"loopId": self.loop["id"]})
         first = await self.execute()
+        saved = await self.service.handle("save", {"loopId": self.loop["id"]})
         self.assertEqual(first["status"], "success", first.get("reason"))
         self.assertEqual(Path(first["stepResults"][0]["outputs"]["report"]).read_text(), "FIRST INPUT")
         self.source.write_text("second input")
@@ -117,8 +117,8 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                                    "execution": {"tool": "python", "script": "scripts/report.py"}, "outputs": [{"id": "file", "label": "最终报告", "path": "report.txt"}], "checks": [], "onFailure": {"action": "stop"}})
         definition["finalOutputs"] = ["${steps.report.outputs.file}", "${steps.convert.outputs.report}"]
         built = await self.build(definition)
-        saved = await self.service.handle("save", {"loopId": self.loop["id"]})
         run = await self.execute()
+        saved = await self.service.handle("save", {"loopId": self.loop["id"]})
         self.assertEqual(run["status"], "success", run.get("reason"))
         self.assertEqual([item["title"] for item in run["artifacts"]], ["最终报告", "转换结果"])
         self.assertEqual([Path(item["path"]).name for item in run["intermediateArtifacts"]], ["final-looking.tmp", "execution.json"])
@@ -190,6 +190,8 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_user_rename_preserves_versions_and_survives_ai_definition_updates(self):
         await self.build(flow())
+        trial = await self.execute()
+        self.assertEqual(trial["status"], "success", trial.get("reason"))
         saved = await self.service.handle("save", {"loopId": self.loop["id"]})
         renamed = await self.service.handle("rename", {"loopId": self.loop["id"], "title": "  我的流程  "})
         self.assertEqual(renamed["title"], "我的流程")
@@ -205,6 +207,8 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_delete_and_restore_preserve_saved_flow_runs_files_and_session_across_restart(self):
         await self.build(flow())
+        trial = await self.execute()
+        self.assertEqual(trial["status"], "success", trial.get("reason"))
         saved = await self.service.handle("save", {"loopId": self.loop["id"]})
         await self.service.handle("message", {"loopId": self.loop["id"], "role": "user", "text": "保留这条搭建对话"})
         self.service.store.session(self.loop["id"], [{"role": "user", "content": "build"}])

@@ -20,7 +20,7 @@ def resources(config):
 def create_run(store, loop, values, snapshot=None):
     current = loop
     if snapshot:
-        loop = {**loop, **copy.deepcopy(snapshot)}
+        loop = {**loop, **copy.deepcopy(snapshot), "savedRevision": snapshot["revision"]}
     definition = validate(loop["definition"], loop["config"])
     if values is not None and not isinstance(values, dict):
         raise ValueError("运行输入需要按输入标识提供对象。")

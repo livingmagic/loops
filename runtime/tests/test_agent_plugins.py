@@ -41,13 +41,13 @@ class AgentPluginTests(unittest.IsolatedAsyncioTestCase):
                             'execution': {'tool': 'agent', 'mode': 'read-only', 'responseOutput': 'result'},
                             'outputs': [{'id': 'result', 'label': 'Report', 'path': 'report.txt'}], 'checks': []}]}
                     await service.handle('definition', {'loopId': loop['id'], 'definition': definition})
-                    await service.handle('save', {'loopId': loop['id']})
                     run = await service.handle('start', {'loopId': loop['id']})
                     await service.runner.tasks[run['id']]
                     result = service.store.run(loop['id'], run['id'])
                     self.assertEqual(result['status'], 'success', result.get('reason'))
                     self.assertEqual(Path(result['artifacts'][0]['path']).read_text().strip(), 'test fixture output: fixture-model/low')
                     self.assertEqual(result['agentBindings']['fixture-agent']['pluginVersion'], '1.0.0')
+                    await service.handle('save', {'loopId': loop['id']})
                 finally:
                     await service.handle('shutdown', {})
                     service.store.db.close()

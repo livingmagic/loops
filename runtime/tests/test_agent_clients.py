@@ -71,7 +71,11 @@ class AgentWorkflowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_default_override_session_isolation_and_frozen_run(self):
         await self.build()
+        trial = self.service.runner.start(self.loop['id'])
+        await self.service.runner.tasks[trial['id']]
         await self.service.handle('save', {'loopId': self.loop['id']})
+        self.clients.calls.clear()
+        self.clients.created.clear()
         run = await self.service.handle('start', {'loopId': self.loop['id']})
         await self.service.handle('agent_selection', {'loopId': self.loop['id'], 'agentId': 'codex'})
         await self.service.runner.tasks[run['id']]
@@ -120,6 +124,9 @@ class AgentWorkflowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_automation_snapshot_uses_saved_agent_selection(self):
         await self.build()
+        trial = self.service.runner.start(self.loop['id'])
+        await self.service.runner.tasks[trial['id']]
+        self.clients.calls.clear()
         saved = await self.service.handle('save', {'loopId': self.loop['id']})
         snapshot = json.loads((Path(saved['versions'][0]['path'])/'loop.json').read_text())
         await self.service.handle('agent_selection', {'loopId': self.loop['id'], 'agentId': 'codex'})
@@ -294,7 +301,6 @@ class AgentModelTests(unittest.IsolatedAsyncioTestCase):
                 await service.handle('definition', {'loopId': loop['id'], 'definition': definition()})
                 await service.handle('agent_model_selection', {'loopId': loop['id'], 'agentId': 'mimo', 'model': 'xiaomi/flow'})
                 await service.handle('agent_model_selection', {'loopId': loop['id'], 'stepId': 'followup', 'model': 'xiaomi/step'})
-                await service.handle('save', {'loopId': loop['id']})
                 run = await service.handle('start', {'loopId': loop['id']})
                 await service.runner.tasks[run['id']]
                 result = service.store.run(loop['id'], run['id'])

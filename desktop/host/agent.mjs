@@ -77,7 +77,7 @@ export function builderTools(engine, loopId, signal) {
       }
     }),
     tool('start_trial', '启动真实试跑；省略输入时使用项目资料中的默认值', Type.Object({ inputs: Type.Optional(Type.Record(Type.String(), Type.String())) }), (args) => engine.call('start', { loopId, ...args })),
-    tool('save_loop', '在员工要求保存时保存当前定义和执行脚本', Type.Object({}), async () => loopSummary(await engine.call('save', { loopId }))),
+    tool('save_loop', '将已试跑成功的当前草稿保存为版本', Type.Object({}), async () => loopSummary(await engine.call('save', { loopId }))),
   ];
 }
 

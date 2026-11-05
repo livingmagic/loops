@@ -161,27 +161,68 @@ class Store:
         loop["definition"] = validate(definition, loop["config"])
         loop["revision"] += 1
         loop["title"] = loop.get("userTitle") or definition["title"].strip()
+        self.write_draft(loop)
+        return self.put(loop)
+
+    @staticmethod
+    def write_draft(loop):
         draft = Path(loop["workdir"]) / "draft"
         draft.mkdir(exist_ok=True)
         (draft / "loop.json").write_text(json.dumps(loop["definition"], ensure_ascii=False, indent=2))
         (draft / "workflow.py").write_text(workflow_source(loop["definition"]))
         write_bundle(draft, loop["definition"], loop['config'])
+
+    def version(self, loop_id, revision):
+        loop = self.get(loop_id)
+        if type(revision) is not int or revision < 1:
+            raise ValueError("请选择有效的流程版本。")
+        version = next((v for v in loop["versions"] if v["revision"] == revision), None)
+        if not version:
+            raise ValueError(f"Loop「{loop['title']}」没有已保存的版本 {revision}。")
+        try:
+            snapshot = json.loads((Path(version["path"]) / "loop.json").read_text())
+            if snapshot["revision"] != revision:
+                raise ValueError("版本号不一致")
+            snapshot["definition"] = validate(snapshot["definition"], snapshot["config"])
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise ValueError(f"Loop「{loop['title']}」的版本 {revision} 文件缺失或损坏，请恢复版本文件后重试。") from error
+        return snapshot
+
+    def restore_version(self, loop_id, revision, *, expected_revision=None, discard_draft=False):
+        loop = self.get(loop_id)
+        if expected_revision is not None and expected_revision != loop["revision"]:
+            raise ValueError("流程已更新，请重新选择版本后再回退。")
+        if loop["definition"] and loop["savedRevision"] != loop["revision"] and not discard_draft:
+            raise ValueError("当前有未保存的修改，请确认替换后再恢复版本。")
+        snapshot = self.version(loop_id, revision)
+        loop.update(definition=snapshot["definition"], config=snapshot["config"],
+                    revision=loop["revision"] + 1, restoredFrom=revision,
+                    title=loop.get("userTitle") or snapshot["definition"]["title"])
+        self.write_draft(loop)
         return self.put(loop)
 
-    def save(self, loop_id):
+    def save(self, loop_id, *, expected_revision=None):
         loop = self.get(loop_id)
+        if expected_revision is not None and expected_revision != loop["revision"]:
+            raise ValueError("流程已更新，请确认当前版本后再保存。")
         if not loop["definition"]:
             raise ValueError("请先通过对话搭建流程。")
         if loop["savedRevision"] == loop["revision"]:
             return loop
+        if not any(run.get("revision") == loop["revision"] and run.get("mode") == "trial"
+                   and run["status"] == "success" for run in loop["runs"]):
+            raise ValueError("当前版本试跑成功后才能保存。")
         destination = Path(loop["workdir"]) / "versions" / str(loop["revision"])
         destination.mkdir(parents=True, exist_ok=False)
-        snapshot = {"revision": loop["revision"], "definition": loop["definition"], "config": loop["config"], "savedAt": now()}
+        snapshot = {"revision": loop["revision"], "title": loop["title"], "definition": loop["definition"], "config": loop["config"], "savedAt": now()}
+        if loop.get("restoredFrom"):
+            snapshot["restoredFrom"] = loop["restoredFrom"]
         (destination / "loop.json").write_text(json.dumps(snapshot, ensure_ascii=False, indent=2))
         (destination / "workflow.py").write_text(workflow_source(loop["definition"]))
         write_bundle(destination, loop["definition"], loop['config'])
         loop["savedRevision"] = loop["revision"]
-        loop["versions"].append({"revision": loop["revision"], "path": str(destination), "savedAt": snapshot["savedAt"]})
+        loop["versions"].append({key: value for key, value in snapshot.items() if key not in {"definition", "config"}} | {"path": str(destination)})
+        loop.pop("restoredFrom", None)
         return self.put(loop)
 
     def message(self, loop_id, role, text, **extra):

@@ -46,11 +46,19 @@ async function turn(text) {
   return task;
 }
 try {
-  for (const [title, suffix] of [['内容整理', ''], ['报告编写', '\n报告生成完成。']]) {
-    const loop = await host.engine.call('new'); await host.engine.call('definition', { loopId: loop.id, definition: definition(title, suffix) }); await host.action('save', { loopId: loop.id });
-  }
   const source = path.join(root, 'source.txt'), target = path.join(root, 'delivered');
   await fs.writeFile(source, '对话式输入 beta 23');
+  for (const [title, suffix] of [['内容整理', ''], ['报告编写', '\n报告生成完成。']]) {
+    const loop = await host.engine.call('new');
+    await host.engine.call('definition', { loopId: loop.id, definition: definition(title, suffix) });
+    await host.action('start', { loopId: loop.id, inputs: { source } });
+    const trial = await waitFor(async () => {
+      const run = (await host.action('list')).find(item => item.id === loop.id).runs.at(-1);
+      return ['success', 'failed', 'stopped', 'interrupted'].includes(run.status) && run;
+    });
+    assert.equal(trial.status, 'success', trial.reason);
+    await host.action('save', { loopId: loop.id });
+  }
   let task = await turn('我想用“内容整理”接“报告编写”，每天自动处理数据。输入和交付位置稍后再告诉你，先别运行。');
   assert.equal(task.revision, 0); assert.equal(task.draftSpec, null); assert.equal(task.runs.length, 0);
   task = await turn(`输入文件是 ${source}，结果保存到 ${target}。每天上午9点执行，先把流程搭出来，不保存也不启用。`);

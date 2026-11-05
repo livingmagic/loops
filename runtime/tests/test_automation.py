@@ -41,7 +41,7 @@ class AutomationTests(unittest.IsolatedAsyncioTestCase):
         for _ in range(2):
             loop = self.service.store.new()
             await self.service.handle('definition', {'loopId': loop['id'], 'definition': flow()})
-            self.loops.append(await self.service.handle('save', {'loopId': loop['id']}))
+            self.loops.append(await self.trial_and_save(loop['id']))
         self.spec = {'title': '自动文本处理', 'source': {'script': SOURCE, 'config': {'path': str(self.source)}, 'lifecycle': 'once'},
             'nodes': [{'id': 'first', 'loopId': self.loops[0]['id'], 'bindings': {'source': 'input.source'}}, {'id': 'second', 'loopId': self.loops[1]['id'], 'bindings': {'source': 'first.convert.report'}}],
             'outputs': [{'id': 'delivery', 'title': '交付', 'script': SINK, 'config': {'directory': str(self.root / 'delivered')}, 'bindings': {'report': 'second.convert.report'}}],
@@ -50,6 +50,13 @@ class AutomationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.service.handle('shutdown', {})
         self.service.store.db.close(); self.temp.cleanup()
+
+    async def trial_and_save(self, loop_id):
+        run = await self.service.handle('start', {'loopId': loop_id, 'inputs': {'source': str(self.source)}})
+        await self.service.runner.tasks[run['id']]
+        completed = self.service.store.run(loop_id, run['id'])
+        self.assertEqual(completed['status'], 'success', completed.get('reason'))
+        return await self.service.handle('save', {'loopId': loop_id})
 
     async def save(self, spec=None):
         return await self.service.handle('automation_save', {'spec': spec or self.spec})
@@ -77,7 +84,7 @@ class AutomationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['status'],'success',result)
         self.assertEqual(Path(result['nodes']['delivery']['receipt']['target']).read_text(),'REAL PIPELINE INPUT')
         self.assertEqual(self.a.task(task['id'])['checkpoint'],{'offset':1})
-        self.assertEqual([len(self.service.store.get(l['id'])['runs']) for l in self.loops],[1,1])
+        self.assertEqual([len(self.service.store.get(l['id'])['runs']) for l in self.loops],[2,2])
 
     async def test_authorization_retry_requires_reconnection_and_keeps_completed_loops(self):
         from loops_runtime.connectors import AuthorizationRequired
@@ -109,7 +116,7 @@ class AutomationTests(unittest.IsolatedAsyncioTestCase):
         result = self.a.run(failed['id'])
         self.assertEqual(result['status'], 'success', result)
         self.assertEqual({key: result['nodes'][key]['runId'] for key in completed}, completed)
-        self.assertEqual([len(self.service.store.get(l['id'])['runs']) for l in self.loops], [1, 1])
+        self.assertEqual([len(self.service.store.get(l['id'])['runs']) for l in self.loops], [2, 2])
         self.assertNotIn('blockedConnector', self.a.task(task['id']))
 
     async def test_service_input_releases_responses_but_keeps_call_audit(self):
@@ -205,9 +212,62 @@ class AutomationTests(unittest.IsolatedAsyncioTestCase):
         result=await self.manual(task)
         self.assertEqual(result['status'],'success',result)
         current=self.service.store.get(self.loops[0]['id'])
-        self.assertEqual(current['revision'],2); self.assertEqual(current['runs'][0]['revision'],1)
+        self.assertEqual(current['revision'],2); self.assertEqual(current['runs'][-1]['revision'],1)
         self.assertIn('.lower()',current['definition']['scripts']['scripts/process.py'])
         self.assertEqual(Path(result['nodes']['first']['outputs']['convert.report']['path']).read_text(),'REAL PIPELINE INPUT')
+
+    async def test_version_switch_is_a_draft_and_queued_runs_keep_the_original_snapshot(self):
+        task = await self.save()
+        loop_id = self.loops[0]['id']
+        changed = flow()
+        changed['scripts']['scripts/process.py'] = changed['scripts']['scripts/process.py'].replace('.upper()', '.lower()')
+        await self.service.handle('definition', {'loopId': loop_id, 'definition': changed})
+        await self.trial_and_save(loop_id)
+        # A paused background event stays queued while the task is edited.
+        queued = self.a.accept(task['id'], 'before-upgrade', {'source': {'kind': 'file', 'path': str(self.source)}})
+        draft = await self.service.handle('automation_set_loop_version', {'taskId': task['id'], 'nodeId': 'first', 'revision': 2})
+        self.assertEqual(draft['revision'], 1)
+        self.assertEqual(draft['spec']['nodes'][0]['revision'], 1)
+        self.assertEqual(draft['draftSpec']['nodes'][0]['revision'], 2)
+        with self.assertRaisesRegex(ValueError, '未保存'):
+            await self.service.handle('automation_run', {'taskId': task['id']})
+        saved = await self.service.handle('automation_save', {'taskId': task['id']})
+        self.assertEqual(saved['revision'], 2)
+        await self.a.enable(task['id'], True)
+        runs = await self.settle(task['id'])
+        latest = next(run for run in runs if run['revision'] == 2)
+        self.assertEqual(latest['status'], 'success', latest)
+        self.assertEqual(Path(latest['nodes']['first']['outputs']['convert.report']['path']).read_text(), 'real pipeline input')
+        child = self.service.store.run(loop_id, latest['nodes']['first']['runId'])
+        self.assertEqual((child['revision'], child['mode']), (2, 'run'))
+        old = self.a.run(queued['runId'])
+        self.assertEqual(old['revision'], 1)
+        self.assertEqual(old['status'], 'success', old)
+        self.assertEqual(Path(old['nodes']['first']['outputs']['convert.report']['path']).read_text(), 'REAL PIPELINE INPUT')
+        child = self.service.store.run(loop_id, old['nodes']['first']['runId'])
+        self.assertEqual((child['revision'], child['mode']), (1, 'run'))
+        detail = self.a.detail(task['id'])
+        self.assertEqual(next(r for r in detail['runs'] if r['id'] == old['id'])['nodeRevisions']['first'], 1)
+        with self.assertRaisesRegex(ValueError, '先暂停'):
+            self.a.set_loop_version(task['id'], 'first', 1)
+
+    async def test_incompatible_version_preserves_the_entire_automation_draft(self):
+        task = await self.save()
+        changed = flow()
+        changed['finalOutputs'] = []
+        loop_id = self.loops[0]['id']
+        await self.service.handle('definition', {'loopId': loop_id, 'definition': changed})
+        await self.trial_and_save(loop_id)
+        for revision in (0, True, 999, 2):
+            with self.subTest(revision=revision), self.assertRaises(ValueError):
+                self.a.set_loop_version(task['id'], 'first', revision)
+            self.assertEqual(self.a.task(task['id'])['spec'], task['spec'])
+            self.assertIsNone(self.a.task(task['id']).get('draftSpec'))
+        # Explicit invalid revisions must not silently select the latest version.
+        spec = copy.deepcopy(self.spec)
+        spec['nodes'][0]['revision'] = 0
+        with self.assertRaisesRegex(ValueError, '有效的流程版本'):
+            await self.save(spec)
 
     async def test_failed_delivery_only_retries_output_with_stable_delivery_key(self):
         spec=copy.deepcopy(self.spec); marker=self.root/'allow'
@@ -322,7 +382,7 @@ class AutomationTests(unittest.IsolatedAsyncioTestCase):
         current=self.service.store.get(self.loops[0]['id']); current['config']['inputDefaults']={'source':str(self.source)}
         self.service.store.put(current)
         await self.service.handle('definition',{'loopId':current['id'],'definition':flow()})
-        await self.service.handle('save',{'loopId':current['id']})
+        await self.trial_and_save(current['id'])
         spec=copy.deepcopy(self.spec); spec['nodes'][0]['bindings']={}; task=await self.save(spec)
         accepted=self.a.accept(task['id'],'frozen-default',{},manual=True)
         self.source.write_text('changed after event')
