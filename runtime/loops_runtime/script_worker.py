@@ -139,7 +139,7 @@ class Context:
 
     def deliver_document(self, input_name, readback=None, *, target, content=None, actual_title=None, actual_format='text',
                          content_path=None, format_path=None, title_path=None, status='delivered', **details):
-        """文档输出的终结操作：优先用 content=本次只读返回中的实际正文字符串、actual_title=只读回读的实际名称字段（指定了 expectedTitle 时必需）、actual_format=实际格式、target=已核对身份的实际URL。直接传字段值，框架自动追踪原始位置，不需要拼 JSON Pointer。actual_title 不是配置中的目标名称，不得用 ctx.config 或常量代替实际名称。不要清洗、改写或 JSON 编解码后再传回读字段。按固定 verification 验证后才确认回执，失败抛异常，成功返回 True，无需再判断 ok/matched 或调用 receipt。也支持各字段独立通过 readback 的 content_path/title_path/format_path 选择；直接字段值优先，路径相对于 readback，不拼接字段移动前的旧位置。不会创建、写入、重复调用连接器或修改授权。"""
+        """文档输出的终结操作：优先用 content=本次只读返回中的实际正文字符串、actual_title=只读回读的实际名称字段（指定了 expectedTitle 时必需）、actual_format=实际格式、target=已核对身份的实际URL。直接传字段值，框架自动追踪原始位置，不需要拼 JSON Pointer。actual_title 不是配置中的目标名称，不得用 ctx.config 或常量代替实际名称。不要清洗、改写或 JSON 编解码后再传回读字段。按固定 verification 验证后才确认回执，失败抛异常，成功返回 True，无需再判断 ok/matched 或调用 receipt。也支持各字段独立通过 readback 的 content_path/title_path/format_path 选择；直接字段值优先，路径相对于 readback，不拼接字段移动前的旧位置。不会创建、写入、重复调用插件或修改授权。"""
         # Compatibility for scripts saved during the earlier SDK revision.
         legacy_title = details.pop('title', None)
         title = actual_title if actual_title is not None else legacy_title

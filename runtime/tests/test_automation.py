@@ -1,3 +1,4 @@
+import sys
 import asyncio
 import copy
 import json
@@ -89,7 +90,7 @@ class AutomationTests(unittest.IsolatedAsyncioTestCase):
     async def test_authorization_retry_requires_reconnection_and_keeps_completed_loops(self):
         from loops_runtime.connectors import AuthorizationRequired
         broker = self.service.connectors
-        broker.save({'id': 'target', 'name': 'Target', 'type': 'cli', 'command': ['unused'],
+        broker.save({'id': 'target', 'name': 'Target', 'type': 'cli', 'command': [sys.executable],
                      'auth': {'mode': 'none'}, 'operations': [
                          {'name': 'deliver', 'effect': 'write', 'args': ['deliver']}]})
         broker.entry('target').update(enabled=True, status='connected')
@@ -152,7 +153,7 @@ class AutomationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_document_output_still_verifies_host_readback_snapshot(self):
         broker = self.service.connectors
-        broker.save({'id': 'target', 'name': 'Target', 'type': 'cli', 'command': ['unused'],
+        broker.save({'id': 'target', 'name': 'Target', 'type': 'cli', 'command': [sys.executable],
                      'auth': {'mode': 'none'}, 'operations': [
                          {'name': 'read', 'effect': 'read', 'args': ['read']}]})
         broker.entry('target').update(enabled=True, status='connected')

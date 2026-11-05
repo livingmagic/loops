@@ -106,11 +106,11 @@ class KeychainVault:
 def validate_manifest(manifest):
     value = copy.deepcopy(manifest)
     if not isinstance(value, dict) or not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_-]{0,63}", str(value.get("id", ""))):
-        raise ValueError("连接器 ID 只能包含字母、数字、下划线或连字符，且以字母开头。")
+        raise ValueError("插件 ID 只能包含字母、数字、下划线或连字符，且以字母开头。")
     if not isinstance(value.get("name"), str) or not value["name"].strip():
-        raise ValueError("请填写连接器名称。")
+        raise ValueError("请填写插件名称。")
     if value.get("type") not in {"mcp", "cli"}:
-        raise ValueError("连接器类型需要为 mcp 或 cli。")
+        raise ValueError("插件类型需要为 mcp 或 cli。")
     # Validate configuration structure, without mistaking schema field names
     # (e.g. a pagination "token") for actual credential values.
     public_fields = {"id", "name", "description", "type", "version", "provider", "identity", "command", "package", "auth", "operations", "transport", "url"}
@@ -194,7 +194,7 @@ class Connectors:
 
     def entry(self, key):
         if key not in self.items:
-            raise ValueError("连接器不存在，请先添加。")
+            raise ValueError("插件不存在，请先添加。")
         return self.items[key]
 
     def public(self, key):
@@ -243,7 +243,7 @@ class Connectors:
             return False
         text = params.get('text')
         if not isinstance(text, str) or not text.strip() or len(text.strip()) > 60 or '\n' in text or '\r' in text:
-            raise ValueError('连接器简介需要不超过 60 字的一句话。')
+            raise ValueError('插件简介需要不超过 60 字的一句话。')
         self.entry(key)['generatedDescription'] = {'text': self.redact(text.strip()), 'sourceHash': context['sourceHash'], 'generatedAt': now()}
         self.persist()
         return True
@@ -256,7 +256,7 @@ class Connectors:
         key = manifest["id"]
         old = self.items.get(key)
         if self.locks.get(key) and self.locks[key].locked():
-            raise ValueError("连接器正在执行，请等本次调用结束后再修改定义或凭证。")
+            raise ValueError("插件正在执行，请等本次调用结束后再修改定义或凭证。")
         if key in self.jobs and not self.jobs[key].done():
             raise ValueError("正在连接，请先取消连接再修改。")
         if secrets is not None:
@@ -358,7 +358,7 @@ class Connectors:
         search = os.pathsep.join(filter(None, [str(self.root / "connector-tools/node_modules/.bin"), "/opt/homebrew/bin", "/usr/local/bin", os.environ.get("PATH")]))
         found = shutil.which(binary, path=search)
         if not found:
-            raise ConnectorFailure(f"尚未安装 {Path(binary).name}，请先安装连接器工具。")
+            raise ConnectorFailure(f"尚未安装 {Path(binary).name}，请先安装插件工具。")
         return [found, *command[1:]]
 
     def environment(self, key):
@@ -384,7 +384,7 @@ class Connectors:
             while chunk := await stream.read(65536):
                 size += len(chunk)
                 if size > 10_000_000:
-                    raise ConnectorFailure("连接器响应超过 10MB。")
+                    raise ConnectorFailure("插件响应超过 10MB。")
                 chunks.append(chunk)
             return b"".join(chunks)
         try:
@@ -580,6 +580,9 @@ class Connectors:
                          'risk': item['risk']} for item in catalog['operations'].values()], identity
             tools = [{**{k: v for k, v in op.items() if k not in {"args", "format"}}, 'risk': op['effect']} for op in manifest.get("operations", [])
                      if not op.get("identity") or op["identity"] == manifest.get("identity")]
+            from .cli_discovery import digest
+            for tool in tools:
+                tool['sourceHash'] = digest({'manifest': manifest, 'tool': tool})
             return tools, identity
         from .cli_discovery import declared_risk
         cli_info = await self.cli_check(key) if manifest['auth']['mode'] == 'cli' else None
@@ -600,7 +603,7 @@ class Connectors:
                 if not cursor:
                     break
                 if len(tools) > 2000:
-                    raise ConnectorFailure("连接器工具列表过大。")
+                    raise ConnectorFailure("插件工具列表过大。")
             info = cli_info or {"mode": self.mcp_auth_mode(key)}
             if info["mode"] == "oauth":
                 credentials = self.vault.get(key)
@@ -617,11 +620,11 @@ class Connectors:
         return digest({k:v for k,v in tool.items() if k not in {'effect', 'risk', 'sourceHash', 'riskAssessment'}})
 
     @staticmethod
-    def frozen_mcp(tool):
+    def frozen_mcp(tool, kind='mcp'):
         from .cli_discovery import digest
         if tool.get('risk') not in {'read', 'write'}:
-            raise ConnectorFailure('请先检查并评估这项 MCP 操作；未知或高风险操作不能用于无人值守任务：' + tool['name'])
-        value = {**copy.deepcopy(tool), 'metadataKind': 'mcp'}
+            raise ConnectorFailure('请先检查并评估这项插件操作；未知或高风险操作不能用于无人值守任务：' + tool['name'])
+        value = {**copy.deepcopy(tool), 'metadataKind': kind}
         value['contractHash'] = digest(value)
         return value
 
@@ -675,7 +678,7 @@ class Connectors:
     async def tool_operation(self, key, method, params):
         # MCP and manually declared CLI operations share a flat tool index.
         if method == 'connector_skill':
-            raise ValueError('这个连接器未提供可读取的 Skill。')
+            raise ValueError('这个插件未提供可读取的 Skill。')
         async with self.locks.setdefault(key, asyncio.Lock()):
             tools, _ = await self.discover(key)
             tools = json.loads(self.redact(json.dumps(tools, ensure_ascii=False)))
@@ -693,7 +696,7 @@ class Connectors:
                         'nextOffset': offset + limit if offset + limit < len(matches) else None}
             tool = next((t for t in tools if t['name'] == params['operation']), None)
             if not tool:
-                raise ValueError('连接器中没有这项操作。')
+                raise ValueError('插件中没有这项操作。')
             if method == 'connector_review_operation':
                 risk, evidence = params['risk'], params['evidence']
                 if tool['risk'] != 'unknown':
@@ -747,10 +750,10 @@ class Connectors:
         # SDK HTTP errors can contain authenticated URLs. Return status only.
         response = getattr(error, "response", None)
         if response is not None:
-            return f"连接器 HTTP 请求失败（{response.status_code}）。"
+            return f"插件 HTTP 请求失败（{response.status_code}）。"
         if isinstance(error, (ConnectorFailure, AuthorizationRequired, ToolInstallError, ValueError, FileNotFoundError)):
             return self.redact(str(error))[:1000]
-        return f"连接器调用未完成（{type(error).__name__}），请检查服务与网络。"
+        return f"插件调用未完成（{type(error).__name__}），请检查服务与网络。"
 
     async def call(self, key, operation, arguments, *, role, expected_revision=None, delivery_key="", expected_contract=None):
         from jsonschema import validate
@@ -760,17 +763,17 @@ class Connectors:
             await asyncio.shield(self.jobs[key])
         entry = self.entry(key)
         if expected_revision is not None and entry["revision"] != expected_revision:
-            raise ConnectorFailure("连接器定义已修改，请重新保存自动化任务后运行。")
+            raise ConnectorFailure("插件定义已修改，请重新保存自动化任务后运行。")
         if not entry["enabled"]:
             if entry["status"] == "error":
-                raise ConnectorFailure("连接器暂不可用，请检查服务和网络后重试连接。")
-            raise AuthorizationRequired("连接器已断开或授权失效，请在连接器页面重新连接。")
+                raise ConnectorFailure("插件暂不可用，请检查服务和网络后重试连接。")
+            raise AuthorizationRequired("插件已断开或授权失效，请在插件页面重新连接。")
         async with self.locks.setdefault(key, asyncio.Lock()):
             entry = self.entry(key)
             if not entry["enabled"]:
-                raise AuthorizationRequired("连接器已断开或授权失效，请重新连接。")
+                raise AuthorizationRequired("插件已断开或授权失效，请重新连接。")
             if expected_revision is not None and entry["revision"] != expected_revision:
-                raise ConnectorFailure("连接器定义已修改，请重新保存自动化任务后运行。")
+                raise ConnectorFailure("插件定义已修改，请重新保存自动化任务后运行。")
             try:
                 # Discover again so a revoked identity/tool cannot be used from stale UI state.
                 discovery = self.discovery(key)
@@ -793,24 +796,24 @@ class Connectors:
                     tools, _ = await self.discover(key)
                     tool = next((t for t in tools if t["name"] == operation), None)
                 if not tool:
-                    raise ConnectorFailure("连接器中没有这项操作，请重新检查连接。")
+                    raise ConnectorFailure("插件中没有这项操作，请重新检查连接。")
                 if not discovery and expected_contract is not None:
                     from .cli_discovery import digest
-                    if (expected_contract.get('metadataKind') != 'mcp' or expected_contract.get('name') != operation
+                    if (expected_contract.get('metadataKind') != entry['manifest']['type'] or expected_contract.get('name') != operation
                         or expected_contract.get('contractHash') != digest({k:v for k,v in expected_contract.items() if k != 'contractHash'})
                         or expected_contract.get('sourceHash') != tool.get('sourceHash')
                         or expected_contract.get('risk') != tool.get('risk')):
-                        raise ConnectorFailure('MCP 操作说明、参数或读写评估已改变，请重新检查并保存任务。')
+                        raise ConnectorFailure('插件操作说明、参数或读写评估已改变，请重新检查并保存任务。')
                     tool = expected_contract
                 if not self.entry(key)["enabled"]:
-                    raise AuthorizationRequired("连接器已断开，本次操作未发起。")
+                    raise AuthorizationRequired("插件已断开，本次操作未发起。")
                 if role in {"input", "sample"} and tool["effect"] != "read":
-                    raise ConnectorFailure("输入采集只能调用声明为只读的连接器操作。")
+                    raise ConnectorFailure("输入采集只能调用声明为只读的插件操作。")
                 from jsonschema.exceptions import ValidationError
                 try:
                     validate(arguments, tool.get("inputSchema", {"type": "object"}))
                 except ValidationError as error:
-                    raise ConnectorFailure("连接器参数无效：" + error.message[:500]) from error
+                    raise ConnectorFailure("插件参数无效：" + error.message[:500]) from error
                 manifest = entry["manifest"]
                 if manifest["type"] == "cli":
                     if discovery:
@@ -853,7 +856,7 @@ class Connectors:
                 if self.is_auth_error(error):
                     self.state(key, "authorization_required", "授权失效，请重新连接后恢复任务。", enabled=False,
                                credentialRequest=self.credential_request(key, error))
-                    raise AuthorizationRequired(f"连接器 {entry['manifest']['name']} 需要重新授权。") from error
+                    raise AuthorizationRequired(f"插件 {entry['manifest']['name']} 需要重新授权。") from error
                 raise ConnectorFailure(self.safe_error(error)) from error
 
     @staticmethod
@@ -863,7 +866,7 @@ class Connectors:
         def expand(arg):
             def replacement(match):
                 if match[1] not in values:
-                    raise ConnectorFailure(f"连接器参数缺少 {match[1]}。")
+                    raise ConnectorFailure(f"插件参数缺少 {match[1]}。")
                 v = values[match[1]]
                 return v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
             return re.sub(r"\$\{([\w.-]+)\}", replacement, arg)
@@ -876,7 +879,7 @@ class Connectors:
             if not entry['enabled'] or entry['status'] != 'connected':
                 unavailable.append(entry['manifest']['name'])
         if unavailable:
-            raise AuthorizationRequired('请先在左侧“连接器”中连接以下服务：' + '、'.join(unavailable)
+            raise AuthorizationRequired('请先在左侧“插件”中连接以下服务：' + '、'.join(unavailable)
                                         + '。连接后平台会自动继续搭建任务草稿。')
 
     async def prepare_contracts(self, grants):
@@ -887,7 +890,7 @@ class Connectors:
                 async with self.locks.setdefault(grant['id'], asyncio.Lock()):
                     for name in grant['operations']:
                         await discovery.operation(name)
-            elif self.entry(grant['id'])['manifest']['type'] == 'mcp':
+            else:
                 async with self.locks.setdefault(grant['id'], asyncio.Lock()):
                     tools, _ = await self.discover(grant['id'])
                     tools = json.loads(self.redact(json.dumps(tools, ensure_ascii=False)))
@@ -895,8 +898,8 @@ class Connectors:
                     for name in grant['operations']:
                         tool = next((t for t in tools if t['name'] == name), None)
                         if not tool:
-                            raise ConnectorFailure('MCP 服务中没有这项操作：' + name)
-                        self.frozen_mcp(tool)
+                            raise ConnectorFailure('插件中没有这项操作：' + name)
+                        self.frozen_mcp(tool, self.entry(grant['id'])['manifest']['type'])
                     self.persist()
 
     def snapshot_contracts(self, grants):
@@ -905,9 +908,9 @@ class Connectors:
             discovery = self.discovery(grant['id'])
             if discovery:
                 result[grant['id']] = {name: discovery.frozen(name) for name in grant['operations']}
-            elif self.entry(grant['id'])['manifest']['type'] == 'mcp':
+            else:
                 tools = {t['name']:t for t in self.entry(grant['id'])['tools']}
-                result[grant['id']] = {name: self.frozen_mcp(tools[name]) for name in grant['operations']}
+                result[grant['id']] = {name: self.frozen_mcp(tools[name], self.entry(grant['id'])['manifest']['type']) for name in grant['operations']}
         return result
 
     async def connect(self, key):
@@ -1190,4 +1193,4 @@ class Connectors:
             return await self.provide_credentials(key, params['kind'], params['values'])
         if method == "connector_disconnect":
             return await self.disconnect(key)
-        raise ValueError("不支持的连接器操作。")
+        raise ValueError("不支持的插件操作。")

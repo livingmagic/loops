@@ -1,0 +1,57 @@
+[
+  {
+    "file": "mimo.ico",
+    "source": "https://cdn.cnbj1.fds.api.mi-img.com/aife/mimo-blog-fe/doc_build/mimo.ico",
+    "contentType": "image/vnd.microsoft.icon",
+    "sha256": "fc3c0ff6c811da899f3a2f42f36944b7fcc0cb0a57e4ceba32770e5e9a88a2e5",
+    "bytes": 4286,
+    "retrievedAt": "2026-11-05"
+  },
+  {
+    "file": "tapd.png",
+    "source": "https://www.tapd.cn/favicon_new.png",
+    "contentType": "image/png",
+    "sha256": "0a560c25279c609d6a57742610204bf6539f6f030607d71579c4a12c4b707793",
+    "bytes": 995,
+    "retrievedAt": "2026-11-05"
+  },
+  {
+    "file": "tencent-docs.ico",
+    "source": "https://docs.idqqimg.com/tim/docs/desktop/favicon.ico",
+    "contentType": "image/x-icon",
+    "sha256": "a41f0618d62d19d7907e4976a96985c6dd459984545db5924524b4e2f1e5ff44",
+    "bytes": 4286,
+    "retrievedAt": "2026-11-05"
+  },
+  {
+    "file": "wecom.png",
+    "source": "https://wwcdn.weixin.qq.com/node/wwnl/wwnl/style/images/independent/favicon/favicon_48h$c976bd14.png",
+    "contentType": "image/png",
+    "sha256": "5b95029b419b45aef63f876b9bb8d86705fbff36da4c51dfdd9f2d63a1de7f2a",
+    "bytes": 1823,
+    "retrievedAt": "2026-11-05"
+  },
+  {
+    "file": "feishu-official.png",
+    "source": "https://p1-hera.feishucdn.com/tos-cn-i-jbbdkfciu3/84a9f036fe2b44f99b899fff4beeb963~tplv-jbbdkfciu3-image:100:100.image",
+    "contentType": "image/png",
+    "sha256": "a8b56475a902623937409d0fdc68b4b91040aa6ce34cd71e7870acf0cc8a62d9",
+    "bytes": 6232,
+    "retrievedAt": "2026-11-05"
+  },
+  {
+    "file": "codex.png",
+    "source": "/Applications/ChatGPT.app/Contents/Resources/icon-codex-light.png",
+    "sha256": "de7d43f3386105ab20952958c2c25beb0d903e2aeb6e1aef57c49a648c0d1c07",
+    "retrievedAt": "2026-11-05",
+    "appVersion": "26.1029.61003",
+    "signer": "OpenAI OpCo, LLC (2DC432GLL2)"
+  },
+  {
+    "file": "github.svg",
+    "source": "https://brand.github.com/GitHub_Logos.zip",
+    "archiveEntry": "GitHub Logos/SVG/GitHub_Invertocat_Black.svg",
+    "sha256": "693d7abe6f899646cc2e96856723b45e95f71885a54910b2749f6decdf7e1ee1",
+    "retrievedAt": "2026-11-05"
+  }
+]

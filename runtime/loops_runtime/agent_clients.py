@@ -185,7 +185,7 @@ class AgentClients:
                 raise ValueError(f"{state['name']} 不支持此步骤的执行权限。请选择其他 Agent。")
             model = config.get('agentModels', {}).get(state['id'], state.get('defaultModel'))
             if not model and 'models' in state and any(step_agent(s['execution'], config) == state['id'] and not s['execution'].get('model') for s in definition['steps'] if s['execution']['tool'] in {'agent', 'codex'}):
-                raise ValueError(f"请先在设置中选择 {state['name']} 的默认模型。")
+                raise ValueError(f"请先在插件页面选择 {state['name']} 的默认模型。")
             effort = config.get('agentReasoning', {}).get(state['id'], state.get('defaultReasoning') if model == state.get('defaultModel') else None)
             bindings[state['id']] = {**state, 'model': model, 'reasoning': effort}
             for step in definition['steps']:
@@ -194,6 +194,12 @@ class AgentClients:
                     resolve_selection(bindings[state['id']], execution)
         return bindings
 
-    def session(self, binding, cwd, emit, *, read_paths=()):
+    def session(self, binding, cwd, emit, *, read_paths=(), write_paths=()):
         options = {'binary': binding['binary'], 'read_paths': read_paths, 'model': binding.get('model'), 'reasoning': binding.get('reasoning')}
+        if write_paths:
+            import inspect
+            parameters = inspect.signature(CLIENTS[binding['id']]['factory']).parameters
+            if 'write_paths' not in parameters and not any(p.kind == p.VAR_KEYWORD for p in parameters.values()):
+                raise ValueError('此 Agent 插件尚不支持自定义目录的产出保存，请更新插件或恢复默认目录。')
+            options['write_paths'] = write_paths
         return CLIENTS[binding['id']]['factory'](cwd, emit, **options)

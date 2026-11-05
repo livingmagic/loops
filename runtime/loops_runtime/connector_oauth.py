@@ -189,7 +189,7 @@ async def provider(broker, key, interactive):
     async def redirect(url):
         nonlocal server
         if not interactive:
-            raise AuthorizationRequired("连接器需要用户重新授权；后台任务不会打开登录页面。")
+            raise AuthorizationRequired("插件需要用户重新授权；后台任务不会打开登录页面。")
         async def receive(reader, writer):
             try:
                 header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)

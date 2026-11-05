@@ -19,10 +19,10 @@ export async function generateDescription(context, config, signal) {
   const response = await collection.completeSimple(model, { systemPrompt, messages: [
     { role: 'user', content: JSON.stringify(descriptionInput(context)), timestamp: Date.now() }
   ] }, { apiKey: config.key, signal, maxTokens: 256 });
-  if (response.stopReason === 'error' || response.stopReason === 'aborted') throw new Error('连接器简介生成未完成。');
+  if (response.stopReason === 'error' || response.stopReason === 'aborted') throw new Error('插件简介生成未完成。');
   const raw = response.content.filter(part => part.type === 'text').map(part => part.text).join('');
   const value = JSON.parse(raw).description;
-  if (typeof value !== 'string' || Array.from(value.trim()).length > 60 || /[\r\n]/.test(value)) throw new Error('连接器简介格式无效。');
+  if (typeof value !== 'string' || Array.from(value.trim()).length > 60 || /[\r\n]/.test(value)) throw new Error('插件简介格式无效。');
   return value.trim();
 }
 

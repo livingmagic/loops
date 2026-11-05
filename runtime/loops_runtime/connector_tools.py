@@ -93,7 +93,7 @@ class ManagedTools:
         tool = TOOLS[key]
         target = tool['targets'].get(self.target)
         if not target:
-            raise ToolInstallError('当前系统暂不支持此连接器。')
+            raise ToolInstallError('当前系统暂不支持此插件。')
         binary = self.path(key)
         binary.parent.mkdir(parents=True, exist_ok=True)
         try:
