@@ -6,5 +6,6 @@ if [[ ! -x "$client_binary" ]]; then
   print '尚未构建客户端，请从 desktop/ 执行 npm run build 和 npm run package:mac。'
   exit 1
 fi
-# Use normal Application Support data, with the existing project-local model configuration.
-exec env -u LOOPS_DATA_DIR -u LOOPS_WORKSPACE_ROOT -u LOOPS_ELECTRON_DEV LOOPS_CONFIG_DIR="$project_root" "$client_binary"
+# Packaged-client acceptance must never use the installed client's data or workspaces.
+qa_data="$project_root/qa/desktop-client"
+exec env -u LOOPS_ELECTRON_DEV LOOPS_DATA_DIR="$qa_data" LOOPS_WORKSPACE_ROOT="$qa_data/workspaces" LOOPS_CONFIG_DIR="$project_root" "$client_binary"

@@ -16,7 +16,7 @@ export class Engine extends EventEmitter {
     const interpreter = python || process.env.LOOPS_PYTHON || (fs.existsSync(bundled) ? bundled : path.join(runtimeDirectory, '.venv/bin/python'));
     if (!fs.existsSync(interpreter)) throw new Error('尚未安装本地执行环境，请运行 runtime/setup.sh。');
     const env = { ...process.env, PYTHONPATH: runtimeDirectory, PYTHONUNBUFFERED: '1', LOOPS_DATA_DIR: dataDirectory };
-    if (workspaceRoot) env.LOOPS_WORKSPACE_ROOT = workspaceRoot;
+    env.LOOPS_WORKSPACE_ROOT = workspaceRoot || process.env.LOOPS_WORKSPACE_ROOT || path.join(dataDirectory, 'workspaces');
     for (const name of Object.keys(env)) if (name.startsWith('DEEPSEEK_')) delete env[name];
     this.process = spawn(interpreter, ['-m', 'loops_runtime.bridge'], { cwd: runtimeDirectory, env, stdio: ['pipe', 'pipe', 'pipe'] });
     this.process.stderr.on('data', () => {}); // SDK diagnostics stay out of the product and credentials never enter UI logs.
