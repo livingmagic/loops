@@ -9,6 +9,7 @@ const desktop = process.cwd();
 const app = path.resolve(process.argv[2] || 'out/Loops-darwin-arm64/Loops.app');
 const resources = path.join(app, 'Contents/Resources');
 const application = path.join(resources, 'app');
+assert.equal(JSON.parse(await fs.readFile(path.join(application, 'package.json'), 'utf8')).name, 'Loops');
 const runtime = path.join(resources, 'runtime');
 const evidence = path.join(desktop, 'qa/artifacts/open-source');
 await fs.mkdir(evidence, { recursive: true });
@@ -29,11 +30,16 @@ for (const file of ['.env.local', 'connections.local.json', 'qa', 'design', 'scr
   assert.equal(await fs.stat(path.join(application, file)).then(() => true, () => false), false, `Unexpected bundled file: ${file}`);
 }
 const { Host } = await import(pathToFileURL(path.join(application, 'host/service.mjs')));
-const options = { dataDirectory, configDirectory, runtimeDirectory: runtime, workspaceRoot: path.join(dataDirectory, 'workspaces') };
+const { clientDataPaths } = await import(pathToFileURL(path.join(application, 'host/data-paths.mjs')));
+assert.deepEqual(clientDataPaths({ isPackaged: true, appData: evidence, root: application, env: {} }), {
+  dataDirectory: path.join(evidence, 'Loops'), workspaceRoot: path.join(evidence, 'Loops/workspaces'),
+});
+const options = { dataDirectory, configDirectory, runtimeDirectory: runtime };
 let host = new Host(options);
 try {
   assert.deepEqual(await host.action('list'), []);
   const loop = await host.action('new');
+  assert.equal(loop.workdir, path.join(await fs.realpath(dataDirectory), 'workspaces', loop.id));
   const definition = {
     schemaVersion: 2, title: '本机打包验证', goal: '将输入转成大写', completion: '输出文件存在',
     inputs: [{ id: 'text', label: '文本', kind: 'text', required: true }],

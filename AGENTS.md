@@ -22,6 +22,6 @@
 ## 正式客户端
 
 - 正式 Mac 客户端在 `desktop/`，本地执行器在 `runtime/`，不要混入原型目录。
-- 开发与验收必须隔离数据库、配置和工作目录，不在已安装的正式客户端中创建测试流程。源码运行使用 `desktop/.local/`；打包客户端验收通过 `desktop/scripts/open-latest.command` 使用 `qa/desktop-client/`，不要直接打开构建产物进行验收。临时脚本需显式指定隔离数据目录，禁止复用正式 Application Support 与 `~/Loops/`；真实模型配置仅按明确授权复用，不改写正式配置。
+- 开发与验收必须隔离数据库、配置和工作目录，不在已安装的正式客户端中创建测试流程。源码运行使用 `desktop/.local/`；打包客户端验收通过 `desktop/scripts/open-latest.command` 使用 `qa/desktop-client/`，不要直接打开构建产物进行验收。临时脚本需显式指定隔离数据目录，禁止复用正式 `~/Library/Application Support/Loops/`（含 `workspaces/`）或旧版 `~/Loops/`；真实模型配置仅按明确授权复用，不改写正式配置。
 - Loops AI 基于 Pi Agent，模型使用 DeepSeek；Codex 任务使用官方 Python SDK。模型凭证仅从本机配置读取，不能出现在版本库、页面状态、日志或模型工具结果中。
 - 本地样例可以验证真实 Codex 修复与测试，但手工测试定义、模型替身和无远程仓库的补丁交付都必须如实标注，不能当成 DeepSeek 完整对话或真实 PR 已通过验收。

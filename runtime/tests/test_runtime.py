@@ -60,6 +60,23 @@ class StoreTests(unittest.TestCase):
         self.store.db.close()
         self.temp.cleanup()
 
+    def test_default_workspace_stays_inside_data_directory_across_restart(self):
+        root = Path(self.temp.name) / 'fresh-data'
+        store = Store(root)
+        try:
+            self.assertFalse((root / 'workspaces').exists())
+            loop = store.new()
+            self.assertEqual(Path(loop['workdir']), root.resolve() / 'workspaces' / loop['id'])
+            (Path(loop['workdir']) / 'keep.txt').write_text('saved')
+        finally:
+            store.db.close()
+        restored = Store(root)
+        try:
+            self.assertEqual(restored.get(loop['id'])['workdir'], loop['workdir'])
+            self.assertEqual((Path(loop['workdir']) / 'keep.txt').read_text(), 'saved')
+        finally:
+            restored.db.close()
+
     def test_saved_definition_and_executable_survive_reload(self):
         self.store.update_definition(self.loop['id'], definition())
         loop = self.store.get(self.loop['id'])

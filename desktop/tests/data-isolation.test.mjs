@@ -7,13 +7,13 @@ import { execFileSync } from 'node:child_process';
 import { clientDataPaths } from '../host/data-paths.mjs';
 import { Engine } from '../host/engine.mjs';
 
-test('source startup and packaged acceptance isolate both state and workspace; installed app keeps existing paths', () => {
-  const common = { root: '/checkout/desktop', userData: '/home/user/Application Support/loops-desktop', home: '/home/user', env: {} };
+test('source and acceptance remain isolated; installed app keeps all managed data under Loops', () => {
+  const common = { root: '/checkout/desktop', appData: '/home/user/Application Support', env: {} };
   assert.deepEqual(clientDataPaths({ ...common, isPackaged: false }), {
     dataDirectory: '/checkout/desktop/.local/desktop', workspaceRoot: '/checkout/desktop/.local/desktop/workspaces',
   });
   assert.deepEqual(clientDataPaths({ ...common, isPackaged: true }), {
-    dataDirectory: common.userData, workspaceRoot: '/home/user/Loops',
+    dataDirectory: '/home/user/Application Support/Loops', workspaceRoot: '/home/user/Application Support/Loops/workspaces',
   });
   assert.deepEqual(clientDataPaths({ ...common, isPackaged: true, env: { LOOPS_DATA_DIR: '/qa/session' } }), {
     dataDirectory: '/qa/session', workspaceRoot: '/qa/session/workspaces',

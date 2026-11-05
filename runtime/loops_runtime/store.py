@@ -29,7 +29,7 @@ def workflow_source(definition):
 class Store:
     def __init__(self, root, workspace_root=None):
         self.root = Path(root).expanduser().resolve()
-        self.workspace_root = Path(workspace_root).expanduser().resolve() if workspace_root else Path.home() / "Loops"
+        self.workspace_root = Path(workspace_root).expanduser().resolve() if workspace_root else self.root / "workspaces"
         self.root.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.root / "loops.sqlite3")
         self.db.execute("PRAGMA journal_mode=WAL")

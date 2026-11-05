@@ -6,7 +6,8 @@ import { Host } from '../host/service.mjs';
 import { clientDataPaths } from '../host/data-paths.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const { dataDirectory, workspaceRoot } = clientDataPaths({ isPackaged: app.isPackaged, root, userData: app.getPath('userData'), home: app.getPath('home') });
+app.setName('Loops');
+const { dataDirectory, workspaceRoot } = clientDataPaths({ isPackaged: app.isPackaged, root, appData: app.getPath('appData') });
 fs.mkdirSync(dataDirectory, { recursive: true });
 app.setPath('userData', dataDirectory);
 if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
@@ -29,7 +30,6 @@ function createWindow() {
   else window.loadFile(path.join(root, 'dist/index.html'));
 }
 app.whenReady().then(() => {
-app.setName('Loops');
 app.dock?.setIcon(path.join(root, 'public/assets/loops-icon.png'));
 try {
   host = new Host({ dataDirectory, workspaceRoot,
