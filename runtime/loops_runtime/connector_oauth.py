@@ -1,5 +1,7 @@
 """MCP SDK OAuth with durable expiry, token rotation and noninteractive refresh."""
 import asyncio
+import json
+import httpx
 import time
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse
 
@@ -108,11 +110,23 @@ class DurableOAuth(OAuthClientProvider):
         try:
             outgoing = await flow.__anext__()
             while True:
+                metadata = self.context.oauth_metadata
+                if metadata and outgoing.method == 'POST' and str(outgoing.url) == str(metadata.registration_endpoint):
+                    # DCR may issue a per-installation secret. Negotiate the
+                    # method advertised by the server rather than forcing none.
+                    methods = metadata.token_endpoint_auth_methods_supported or ['client_secret_basic']
+                    method = next((m for m in ('none', 'client_secret_post', 'client_secret_basic') if m in methods), None)
+                    if method is None:
+                        raise ConnectorFailure('授权服务未提供受支持的客户端认证方式。')
+                    self.context.client_metadata.token_endpoint_auth_method = method
+                    body = json.loads(outgoing.content)
+                    body['token_endpoint_auth_method'] = method
+                    outgoing = httpx.Request('POST', outgoing.url, json=body)
                 response = yield outgoing
                 if response.status_code == 401 and outgoing.url == request.url:
                     bearer_challenge = response.headers.get('www-authenticate', '').lower().startswith('bearer')
                 endpoint = getattr(self.context.oauth_metadata, 'registration_endpoint', None)
-                if outgoing.method == 'POST' and (str(outgoing.url) == endpoint or outgoing.url.path.endswith('/register')):
+                if outgoing.method == 'POST' and (str(outgoing.url) == str(endpoint) or outgoing.url.path.endswith('/register')):
                     registration_status = response.status_code
                 if response.status_code == 401 and outgoing.url == request.url and not retried and self.context.can_refresh_token():
                     await flow.aclose()
@@ -180,36 +194,54 @@ class DurableOAuth(OAuthClientProvider):
 
 async def provider(broker, key, interactive):
     manifest = broker.entry(key)["manifest"]
-    port = manifest["auth"].get("callbackPort", 49217)
-    redirect_uri = f"http://127.0.0.1:{port}/callback"
+    saved = broker.vault.get(key)
+    registered = saved.get('client', {}).get('redirect_uris', [])
+    # Reuse the registered callback on reauthorization. Fresh DCR connections
+    # reserve independent OS-assigned ports, so providers cannot collide.
+    registered_port = urlparse(registered[0]).port if registered else None
+    port = manifest['auth'].get('callbackPort', registered_port or (49217 if saved.get('config', {}).get('client_id') else 0))
     loop = asyncio.get_running_loop()
     callback = loop.create_future()
     server = None
 
-    async def redirect(url):
+    async def receive(reader, writer):
+        try:
+            header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
+            target = header.split(b" ", 2)[1].decode()
+            parsed = urlparse(target)
+            query = parse_qs(parsed.query)
+            if parsed.path == "/callback" and not callback.done():
+                if "code" in query:
+                    callback.set_result((query["code"][0], query.get("state", [None])[0]))
+                elif "error" in query:
+                    callback.set_exception(AuthorizationRequired("用户取消了授权。"))
+            body = "授权请求已收到，可以返回 Loops 查看连接结果。".encode()
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n" + body)
+            await writer.drain()
+        except Exception:
+            pass
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async def listen():
         nonlocal server
+        if server is None:
+            try:
+                server = await asyncio.start_server(receive, "127.0.0.1", port, limit=8192)
+            except OSError as error:
+                raise ConnectorFailure('本机授权回调端口被占用，请完成其他授权后重试。') from error
+
+    if interactive:
+        await listen()
+    actual_port = server.sockets[0].getsockname()[1] if server else port
+    redirect_uri = f"http://127.0.0.1:{actual_port}/callback"
+
+    async def redirect(url):
         if not interactive:
             raise AuthorizationRequired("插件需要用户重新授权；后台任务不会打开登录页面。")
-        async def receive(reader, writer):
-            try:
-                header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
-                target = header.split(b" ", 2)[1].decode()
-                parsed = urlparse(target)
-                query = parse_qs(parsed.query)
-                if parsed.path == "/callback" and not callback.done():
-                    if "code" in query:
-                        callback.set_result((query["code"][0], query.get("state", [None])[0]))
-                    elif "error" in query:
-                        callback.set_exception(AuthorizationRequired("用户取消了授权。"))
-                body = "授权请求已收到，可以返回 Loops 查看连接结果。".encode()
-                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n" + body)
-                await writer.drain()
-            except Exception:
-                pass
-            finally:
-                writer.close()
-                await writer.wait_closed()
-        server = await asyncio.start_server(receive, "127.0.0.1", port, limit=8192)
+        await listen()
+        broker.state(key, 'connecting', '请在浏览器中完成授权。')
         broker.auth_views[key] = {"url": url}
         broker.notify({"event": "connector_state"})
         broker.notify({'event': 'connector_authorization', 'connectorId': key, 'url': url})
