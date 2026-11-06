@@ -180,10 +180,24 @@ class Connectors:
         self.recovering, self.retries = set(), {}
         self.discoverers = {}
         self.private_values = set()
+        migrated = False
         for entry in self.items.values():
+            manifest = entry['manifest']
+            if (manifest.get('id') == manifest.get('provider') == 'tapd'
+                and manifest.get('type') == 'cli' and manifest.get('command') == ['tapd-cli']
+                and manifest.get('package') == 'tapd-cli' and manifest.get('auth') == {'mode': 'token'}
+                and 'operations' not in manifest):
+                entry.update(manifest=next(p for p in presets() if p['id'] == 'tapd'),
+                    revision=entry.get('revision', 0) + 1, enabled=False, autoReconnect=False,
+                    status='disconnected', message='点击连接，在浏览器中授权 TAPD。', tools=[],
+                    authorizationInfo=None, credentialRequest=None)
+                entry.pop('capabilities', None)
+                migrated = True
             entry.setdefault("autoReconnect", entry.get("enabled", False) or entry.get("status") in {"connecting", "authorization_required", "error"})
             if entry.get("status") == "connecting":
                 entry.update(status="disconnected", enabled=False, message="上次连接已中断，等待自动检查已有授权。")
+        if migrated:
+            self.persist()
 
     def persist(self):
         temporary = self.file.with_suffix(".tmp")
@@ -299,6 +313,8 @@ class Connectors:
         return text
 
     def mcp_auth_mode(self, key):
+        if key == 'tapd' and preset(self.entry(key)['manifest']):
+            return 'oauth'  # Legacy PAT credentials must not override browser authorization.
         mode = self.entry(key)['manifest'].get('auth', {}).get('mode', 'none')
         if mode != 'none' and self.vault.get(key).get('credentialMode') == 'token':
             return 'token'
@@ -724,10 +740,10 @@ class Connectors:
             except Exception as error:
                 needs_auth = self.is_auth_error(error)
                 request = self.credential_request(key, error)
-                message = '请补充服务请求的连接信息。' if request else self.safe_error(error) if interactive or not needs_auth else '授权已失效，请重新连接。'
+                message = self.safe_error(error) if request or interactive or not needs_auth else '授权已失效，请重新连接。'
                 self.state(key, "authorization_required" if needs_auth else "error", message, enabled=False if needs_auth else was_enabled, credentialRequest=request)
                 if request:
-                    raise CredentialRequired(request['kind'], '请补充服务请求的连接信息。',
+                    raise CredentialRequired(request['kind'], message,
                         secret_required=request.get('secretRequired', False), secret_supported=request.get('secretSupported', False)) from error
                 raise AuthorizationRequired(message) if needs_auth else ConnectorFailure(self.safe_error(error)) from error
             return self.public(key)
@@ -930,7 +946,7 @@ class Connectors:
                 provider = builtin(manifest)
                 if provider:
                     self.state(key, "connecting", f"正在准备{manifest['name']}连接…")
-                    await self.tools.ensure(provider)
+                    await self.tools.ensure(provider, progress=lambda message: self.state(key, 'connecting', message))
                     self.state(key, "connecting", "正在检查授权…")
                     if provider == "feishu":
                         await self.prepare_feishu(key)
@@ -947,7 +963,7 @@ class Connectors:
                 self.state(key, "disconnected", "已取消连接", enabled=False)
             except Exception as error:
                 request = self.credential_request(key, error)
-                self.state(key, "authorization_required" if self.is_auth_error(error) else "error", '请补充服务请求的连接信息。' if request else self.safe_error(error), enabled=False if self.is_auth_error(error) else was_enabled, credentialRequest=request)
+                self.state(key, "authorization_required" if self.is_auth_error(error) else "error", self.safe_error(error), enabled=False if self.is_auth_error(error) else was_enabled, credentialRequest=request)
             finally:
                 self.auth_views.pop(key, None)
                 self.persist()

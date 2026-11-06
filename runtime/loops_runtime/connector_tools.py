@@ -52,7 +52,7 @@ TOOLS = {
 
 def builtin(manifest):
     key = manifest.get('provider')
-    return key if key in TOOLS and preset(manifest) else None
+    return key if key in TOOLS and manifest.get('command') and preset(manifest) else None
 
 
 class ManagedTools:
@@ -75,19 +75,25 @@ class ManagedTools:
         except (OSError, ValueError, KeyError):
             return False
 
-    async def download(self, url, destination):
-        total = 0
+    async def download(self, url, destination, progress=None):
+        total, last_step = 0, -1
         async with httpx.AsyncClient(timeout=httpx.Timeout(30, connect=10), follow_redirects=True, trust_env=False) as client:
             async with client.stream('GET', url) as response:
                 response.raise_for_status()
+                length = response.headers.get('content-length', '')
+                length = int(length) if length.isdigit() else 0
                 with destination.open('wb') as output:
                     async for chunk in response.aiter_bytes():
                         total += len(chunk)
                         if total > 100_000_000:
                             raise ToolInstallError('连接工具下载内容过大，请稍后重新连接。')
                         output.write(chunk)
+                        step = min(20, total * 20 // length) if length else total // 1_000_000
+                        if progress and step != last_step:
+                            last_step = step
+                            progress(f'{min(100, total * 100 // length)}%' if length else f'{total / 1_000_000:.1f} MB')
 
-    async def ensure(self, key):
+    async def ensure(self, key, progress=None):
         if self.ready(key):
             return self.path(key)
         tool = TOOLS[key]
@@ -101,7 +107,12 @@ class ManagedTools:
                 with tempfile.TemporaryDirectory(prefix='.prepare-', dir=binary.parent) as temporary:
                     work = Path(temporary)
                     archive = work / 'download.tar.gz'
-                    await self.download(target['url'], archive)
+                    if progress:
+                        progress(f"正在下载{tool['name']}连接工具…")
+                    await self.download(target['url'], archive,
+                        (lambda value: progress(f"正在下载{tool['name']}连接工具（{value}）")) if progress else None)
+                    if progress:
+                        progress(f"正在校验{tool['name']}连接工具…")
                     raw = archive.read_bytes()
                     valid = (hashlib.sha256(raw).hexdigest() == target['sha256']) if 'sha256' in target else (base64.b64encode(hashlib.sha512(raw).digest()).decode() == target['sha512'])
                     if not valid:
