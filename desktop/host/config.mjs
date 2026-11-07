@@ -1,4 +1,4 @@
-export const DEFAULT_THINKING_LEVEL = 'medium';
+export const DEFAULT_THINKING_LEVEL = 'low';
 // DeepSeek documents medium as a compatibility alias for high. Resolve it
 // explicitly: Pi's bundled catalog currently marks medium unsupported and
 // would otherwise clamp it down to low instead of following the API contract.

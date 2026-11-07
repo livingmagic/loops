@@ -14,7 +14,8 @@ function ModelForm({ item, settings, onSave, onCancel }) {
   const existingService = settings.services?.some(entry => entry.configured && entry.provider === provider && (provider !== 'compatible' || entry.baseUrl === baseUrl.trim().replace(/\/$/, '')));
   const [working, setWorking] = useState(false), [error, setError] = useState('');
   const form = useRef(null);
-  const catalog = settings.providers?.find(entry => entry.id === provider)?.models || [];
+  const selectedProvider = settings.providers?.find(entry => entry.id === provider);
+  const catalog = selectedProvider?.models || [];
   return <form className="settings-card model-form" ref={form} onSubmit={async event => {
     event.preventDefault(); const values = new FormData(form.current); setWorking(true); setError('');
     const apiKey = values.get('apiKey'); form.current.elements.apiKey.value = '';
@@ -23,6 +24,7 @@ function ModelForm({ item, settings, onSave, onCancel }) {
   }}>
     <label>服务<select required value={provider} onChange={e => setProvider(e.target.value)}><option value="" disabled>请选择服务</option>{settings.providers?.map(entry => <option value={entry.id} key={entry.id}>{entry.name}</option>)}<option value="compatible">OpenAI 兼容服务</option></select></label>
     {provider && <>
+      {selectedProvider?.description && <small className="provider-note">{selectedProvider.description}</small>}
       <label>模型{provider === 'compatible' ? <input key={provider} name="model" required defaultValue={item?.provider === provider ? item.model : ''} placeholder="服务提供的模型 ID" /> : <select key={provider} name="model" defaultValue={item?.provider === provider ? item.model : catalog[0]?.id}>{catalog.map(model => <option key={model.id} value={model.id}>{model.name} · {model.id}</option>)}</select>}</label>
       {provider === 'compatible' && <label>API 地址<input name="baseUrl" required type="url" value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="https://example.com/v1" /></label>}
       <label>名称<input name="name" maxLength={80} defaultValue={item?.name || ''} placeholder="留空使用模型 ID" /></label>

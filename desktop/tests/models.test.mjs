@@ -129,11 +129,40 @@ test('thinking controls expose supported levels and persist independently per mo
     const pro = settings.save({ name: 'Pro', provider: 'deepseek', model: 'deepseek-v4-pro', apiKey: 'test-key' }).models.at(-1);
     assert.deepEqual(pro.thinkingLevels, ['off', 'high', 'max']);
     assert.deepEqual(settings.public().models[0].thinkingLevels, ['off', 'low', 'high', 'max']);
+    assert.equal(flash.thinkingLevel, 'low');
+    assert.equal(pro.thinkingLevel, 'high');
+    assert.equal(new ModelSettings(options).config(flash.id).thinkingLevel, 'low');
+    settings.thinking(flash.id, 'off');
+    assert.equal(new ModelSettings(options).config(flash.id).thinkingLevel, 'off');
+    settings.save({ id: flash.id, name: 'Flash renamed', provider: 'deepseek', model: 'deepseek-flash' });
+    assert.equal(new ModelSettings(options).config(flash.id).thinkingLevel, 'off');
     settings.thinking(pro.id, 'max');
     assert.equal(new ModelSettings(options).config(pro.id).thinkingLevel, 'max');
     assert.notEqual(settings.config(flash.id).thinkingLevel, 'max');
     assert.throws(() => settings.thinking(pro.id, 'low'), /不支持/);
     assert.equal(settings.config(pro.id).thinkingLevel, 'max');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('old default off upgrades while explicit choices and non-reasoning models survive restart', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loops-thinking-upgrade-'));
+  try {
+    const options = { dataDirectory: root, decryptSecret: () => 'test-key' };
+    const settings = new ModelSettings(options);
+    settings.write({ version: 2, defaultId: 'old', credentials: { deepseek: 'cipher' }, models: [
+      { id: 'old', name: 'Old', provider: 'deepseek', model: 'deepseek-flash', thinkingLevel: 'off' },
+      { id: 'chosen', name: 'Chosen', provider: 'deepseek', model: 'deepseek-flash', thinkingLevel: 'off', thinkingLevelExplicit: true },
+      { id: 'high', name: 'High', provider: 'deepseek', model: 'deepseek-flash', thinkingLevel: 'high' },
+      { id: 'plain', name: 'Plain', provider: 'compatible', model: 'custom', baseUrl: 'https://example.com/v1', thinkingLevel: 'off' },
+    ] });
+    assert.equal(settings.config().thinkingLevel, 'low');
+    const restarted = new ModelSettings(options);
+    assert.equal(restarted.read().models[0].thinkingLevel, 'low');
+    assert.equal(restarted.config('chosen').thinkingLevel, 'off');
+    assert.equal(restarted.config('high').thinkingLevel, 'high');
+    assert.equal(restarted.config('plain').thinkingLevel, 'off');
+    restarted.save({ name: 'Explicit off', provider: 'deepseek', model: 'deepseek-flash', thinkingLevel: 'off' });
+    assert.equal(new ModelSettings(options).public().models.at(-1).thinkingLevel, 'off');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

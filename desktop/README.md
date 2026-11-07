@@ -41,6 +41,10 @@ MCP 服务、CLI 工具和 Agent 统一在左侧“插件”页面配置。MCP �
 
 首次启动且没有已配置模型时，Loops 会打开模型配置。第一个保存的模型成为默认模型；已有配置会继续使用。模型和密钥可在“设置 → 模型”管理，Codex 仍使用本机 Codex 登录，两者独立。
 
+“设置 → 模型 → 添加模型”内置 DeepSeek、GLM（智谱）、Kimi（月之暗面）、MiMo（小米）、Qwen（通义千问）、OpenAI、Anthropic 和 Google。选择服务和模型后填写该平台的 API Key，无需手填接口地址；其他服务仍可使用 OpenAI 兼容配置。内置 GLM、Kimi、MiMo 和 Qwen 的模型目录及协议能力沿用锁定版本的 Pi SDK；支持对话搭建、自动化搭建与流程模型资源调用。GLM 使用智谱标准模型 API，Kimi 使用中国区开放平台，MiMo 使用小米标准模型 API，Qwen 使用百炼中国内地（北京）的标准模型 API；Coding/Token Plan 订阅额度与标准 API 额度不可混用。
+
+思考深度优先默认“低”；不支持“低”时使用最低可用的思考档位。界面仅显示模型支持的档位，手动选择后按模型保存。接入依据见 [智谱 API](https://docs.bigmodel.cn/cn/guide/develop/openai/introduction)、[Kimi API](https://platform.kimi.com/docs/get-api-key)、[MiMo 深度思考与多轮工具调用](https://platform.xiaomimimo.com/docs/en-US/usage-guide/passing-back-reasoning_content) 和 [百炼兼容接口](https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope)。`tests/model-providers.test.mjs` 使用明确的 HTTP 响应替身检查请求地址、鉴权、思考参数、工具调用与思考内容回传；通过不代表已验证各家真实密钥或服务额度。
+
 添加模型时，已配置的服务商直接复用已有密钥；自定义 OpenAI 兼容服务按规范化 API 地址区分。填写新密钥会更新同一服务下的所有模型。默认模型用于新对话，输入区可以切换当前使用的模型，并选择该模型支持的思考强度；各模型的强度分别保存，下一次回复生效。密钥通过 macOS 安全存储加密后保存到数据目录的 `models.json`，不会回传到页面状态或执行子进程。
 
 升级时会将旧 `.env.local` 和此前保存的模型配置一次性迁入加密配置。迁移成功后不再读取 `.env.local` 或模型密钥环境变量，后续变更只通过设置操作。旧文件不会自动删除，以免影响其中的其他本机配置。迁移失败时保留原文件并报错，不记录迁移完成。
