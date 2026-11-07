@@ -1,0 +1,166 @@
+"""LAN discovery and pinned TLS transport for shared workflows."""
+import asyncio
+import hashlib
+import http.client
+import json
+import os
+import socket
+import ssl
+import struct
+import sys
+import tempfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from urllib.parse import urlsplit
+
+GROUP, DISCOVERY_PORT = '239.255.76.80', 45871
+MAX_BODY = 15 * 1024 * 1024
+
+
+def local_addresses():
+    """Read assigned IPv4 addresses without DNS or network round trips."""
+    addresses = {'127.0.0.1'}
+    # SIOCGIFADDR from Darwin sys/sockio.h and Linux linux/sockios.h.
+    operation = {'darwin': 0xc0206921, 'linux': 0x8915}.get(sys.platform)
+    if operation is None:
+        return addresses
+    import fcntl
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            for _, name in socket.if_nameindex():
+                try:
+                    result = fcntl.ioctl(sock.fileno(), operation, struct.pack('256s', name.encode()))
+                    # ifreq starts with a 16-byte name, then sockaddr_in.sin_addr at offset 4.
+                    address = socket.inet_ntoa(result[20:24])
+                    if address != '0.0.0.0':
+                        addresses.add(address)
+                except OSError:  # Interfaces without an IPv4 address are expected.
+                    continue
+    except OSError:
+        pass
+    return addresses
+
+
+def certificate(directory, name):
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    cert, key = directory / 'server.pem', directory / 'server.key'
+    if not cert.exists() or not key.exists():
+        private = ec.generate_private_key(ec.SECP256R1())
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name[:64])])
+        current = datetime.now(timezone.utc)
+        signed = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
+                  .public_key(private.public_key()).serial_number(x509.random_serial_number())
+                  .not_valid_before(current - timedelta(minutes=1))
+                  .not_valid_after(current + timedelta(days=3650)).sign(private, hashes.SHA256()))
+        key.write_bytes(private.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+        key.chmod(0o600)
+        cert.write_bytes(signed.public_bytes(serialization.Encoding.PEM))
+    der = ssl.PEM_cert_to_DER_cert(cert.read_text())
+    return cert, key, hashlib.sha256(der).hexdigest()
+
+
+def pairing_code(fingerprint, token):
+    value = hashlib.sha256((fingerprint + token).encode()).hexdigest()[:8].upper()
+    return value[:4] + '-' + value[4:]
+
+
+def request(address, method, params=None, *, token=None, fingerprint=None, download=None):
+    url = urlsplit(address)
+    if url.scheme != 'https' or not url.hostname or url.username or url.password or url.path not in {'', '/'} or url.query or url.fragment:
+        raise ValueError('请输入 https://主机:端口 格式的 Loops 地址。')
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE  # Trust comes from the locally approved pairing code and certificate pin.
+    connection = http.client.HTTPSConnection(url.hostname, url.port or 443, context=context, timeout=15)
+    try:
+        connection.connect()
+        actual = hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest()
+        if fingerprint and actual != fingerprint:
+            raise ValueError('对方身份已变化，请重新申请连接并核对配对码。')
+        headers = {'Content-Type': 'application/json'}
+        if token:
+            headers['Authorization'] = 'Bearer ' + token
+        endpoint = '/v1/action'
+        body = json.dumps({'method': method, 'params': params or {}}).encode()
+        if download is not None:
+            endpoint = f"/v1/files/{params['taskId']}/{params['index']}"
+            body = None
+        connection.request('GET' if download is not None else 'POST', endpoint, body, headers)
+        response = connection.getresponse()
+        if response.status == 200 and download is not None:
+            target = Path(download)
+            fd, temporary = tempfile.mkstemp(prefix='.loops-download-', dir=target.parent)
+            partial = Path(temporary)
+            try:
+                with os.fdopen(fd, 'wb') as output:
+                    while chunk := response.read(65536):
+                        output.write(chunk)
+                os.replace(partial, target)
+            finally:
+                partial.unlink(missing_ok=True)
+            return {'path': str(target)}
+        payload = response.read(MAX_BODY + 1)
+        if len(payload) > MAX_BODY:
+            raise ValueError('响应过大，请通过文件下载接口取回。')
+        value = json.loads(payload)
+        if response.status != 200:
+            raise ValueError(value.get('error', '共享服务请求失败。'))
+        return {**value, 'fingerprint': actual} if method == 'identity' else value
+    finally:
+        connection.close()
+
+
+class Discovery(asyncio.DatagramProtocol):
+    def __init__(self, identity):
+        self.identity = identity
+        self.transport = None
+
+    def connection_made(self, transport):
+        self.transport = transport
+
+    def datagram_received(self, data, address):
+        if data == b'LOOPS_DISCOVER_V1':
+            self.transport.sendto(json.dumps(self.identity()).encode(), address)
+
+    async def start(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(('', DISCOVERY_PORT))
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, socket.inet_aton(GROUP) + socket.inet_aton('0.0.0.0'))
+            sock.setblocking(False)
+            await asyncio.get_running_loop().create_datagram_endpoint(lambda: self, sock=sock)
+        except BaseException:
+            sock.close()
+            raise
+
+    def close(self):
+        if self.transport:
+            self.transport.close()
+
+
+async def discover(timeout=1):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setblocking(False)
+    sock.bind(('', 0))
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+    loop = asyncio.get_running_loop()
+    found = {}
+    try:
+        await loop.sock_sendto(sock, b'LOOPS_DISCOVER_V1', (GROUP, DISCOVERY_PORT))
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            try:
+                data, address = await asyncio.wait_for(loop.sock_recvfrom(sock, 4096), deadline - loop.time())
+                value = json.loads(data)
+                if value.get('protocol') == 'loops-sharing-v1' and isinstance(value.get('id'), str) and type(value.get('port')) is int and 0 < value['port'] < 65536:
+                    found[value['id']] = {**value, 'address': f'https://{address[0]}:{value["port"]}'}
+            except (ValueError, KeyError, asyncio.TimeoutError):
+                continue
+    finally:
+        sock.close()
+    return list(found.values())

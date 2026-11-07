@@ -12,6 +12,7 @@ from .commands import read_commands
 from .workflow import resources
 from .automation import Automations
 from .connectors import Connectors
+from .sharing import Sharing
 
 
 def output(value):
@@ -27,6 +28,7 @@ class Service:
         self.model_host = model_host
         self.runner = Runner(self.store, self.changed, connectors=self.connectors, agent_clients=self.agent_clients, model_host=model_host)
         self.automations = Automations(self.store, self.runner, notify, connectors=self.connectors)
+        self.sharing = Sharing(self.store, self.runner, notify)
 
     def changed(self):
         self.notify({"event": "state", "loops": self.store.list()})
@@ -42,6 +44,12 @@ class Service:
     async def handle(self, method, params):
         if method != "shutdown":
             self.connectors.startup()
+            try:
+                await self.sharing.startup()
+            except ValueError:
+                pass  # Local editing remains available when the sharing port cannot bind.
+        if method.startswith("sharing_"):
+            return await self.sharing.handle(method, params)
         if method.startswith("connector_"):
             return await self.connectors.handle(method, params)
         if method.startswith("automation_"):
@@ -263,7 +271,12 @@ class Service:
                 raise ValueError("流程中未保存该脚本。")
             return {"title": params["path"], "content": script_source(loop['definition'], loop['config'], params['path'])}
         elif method == "stop":
-            value = self.runner.stop(loop_id, params["runId"])
+            run = self.store.run(loop_id, params["runId"])
+            if run.get("sharedTask"):
+                self.sharing.cancel(self.sharing.get("task", run["sharedTask"]))
+                value = self.store.run(loop_id, params["runId"])
+            else:
+                value = self.runner.stop(loop_id, params["runId"])
         elif method == "message":
             value = self.store.message(loop_id, params["role"], params["text"], **params.get("extra", {}))
         elif method == "message_update":
@@ -271,7 +284,7 @@ class Service:
         elif method == "claim_failure_review":
             loop = self.store.get(loop_id)
             run = loop["runs"][-1] if loop["runs"] else None
-            if not run or run["id"] != params["runId"] or run["revision"] != loop["revision"] or run["status"] != "failed" or run.get("failureReview"):
+            if not run or run.get("sharedTask") or run["id"] != params["runId"] or run["revision"] != loop["revision"] or run["status"] != "failed" or run.get("failureReview"):
                 return False
             self.store.update_run(loop_id, run["id"], failureReview={"status": "claimed"})
             return True
@@ -299,6 +312,7 @@ class Service:
             clients = await self.agent_clients.discover(refresh=True)
             return {"python": sys.version.split()[0], "agents": clients, "agentPluginErrors": PLUGIN_ERRORS, "codex": next((c for c in clients if c['id'] == 'codex'), None), "dataDirectory": str(self.store.root)}
         elif method == "shutdown":
+            await self.sharing.close()
             await self.agent_clients.close()
             await self.automations.close()
             await self.connectors.close()

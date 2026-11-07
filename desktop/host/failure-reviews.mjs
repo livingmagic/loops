@@ -8,7 +8,7 @@ export class FailureReviews {
     if (this.closed) return;
     for (const loop of loops) {
       const run = loop.runs.at(-1);
-      if (!run || this.ignored.has(run.id)) continue;
+      if (!run || run.sharedTask || this.ignored.has(run.id)) continue;
       if (['queued', 'preparing', 'running', 'correcting'].includes(run.status)) this.active.set(run.id, loop.id);
       else if (this.active.delete(run.id) && run.status === 'failed') this.pending.set(loop.id, run.id);
       if (this.pending.has(loop.id) && (run.status !== 'failed' || run.failureReview)) this.pending.delete(loop.id);
