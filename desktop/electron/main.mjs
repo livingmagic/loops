@@ -56,12 +56,6 @@ if (host) {
     const result = await dialog.showOpenDialog(window, { properties: kind === 'directory' ? ['openDirectory'] : ['openFile'] });
     return result.canceled ? null : result.filePaths[0];
   });
-  ipcMain.handle('loops:reveal', async (event, loopId) => {
-    trusted(event);
-    const loop = (await host.action('list')).find((item) => item.id === loopId);
-    if (!loop) throw new Error('找不到工作目录。');
-    return shell.openPath(loop.workdir);
-  });
   ipcMain.handle('loops:url', (event, url) => { trusted(event); if (!/^https:\/\/github\.com\//.test(url)) throw new Error('只能打开交付记录中的 GitHub 地址。'); return shell.openExternal(url); });
   host.on('event', (event) => {
     if (!window?.isDestroyed()) window?.webContents.send('loops:event', event);

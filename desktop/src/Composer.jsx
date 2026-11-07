@@ -1,13 +1,15 @@
 import { InlinePluginInput } from './InlinePluginInput.jsx';
 import { useContext, useEffect, useId, useRef, useState } from 'react';
-import { ModelPicker } from './ModelContext.jsx';
+import { ModelContext, ModelPicker } from './ModelContext.jsx';
 import { ArrowUpRight, SpinnerGap, Stop } from '@phosphor-icons/react';
 import { PluginIcon } from './PluginIcon.jsx';
 import { PluginContext } from './PluginContext.jsx';
 import { filterPlugins, pluginKey, pluginStatus, pluginTypes, slashQuery } from './plugin-selection.mjs';
 
-export function Composer({ input, text, onChange, onSubmit, pending, onCancel, placeholder, rows = 2, className = '', note, pendingLabel = '正在创建 Loop', draftKey }) {
-  const { plugins, selections, setSelection, loading, error, refresh } = useContext(PluginContext);
+export function Composer({ input, text, onChange, onSubmit, pending, onCancel, placeholder, rows = 2, className = '', pendingLabel = '正在创建 Loop', draftKey }) {
+  const { plugins, selections, setSelection, loading, loaded, error, refresh, ensureLoaded } = useContext(PluginContext);
+  const { settings, openSettings, settingsError } = useContext(ModelContext);
+  const needsSetup = !settings?.defaultModelId;
   const selected = selections[draftKey] || [];
   const [query, setQuery] = useState(null), [active, setActive] = useState(0);
   const listId = useId(), composing = useRef(false), caretRequest = useRef(null);
@@ -19,6 +21,7 @@ export function Composer({ input, text, onChange, onSubmit, pending, onCancel, p
     if (composing.current || !caret) return;
     const next = slashQuery(value, caret.start, caret.end);
     if (next?.start === query?.start && next?.end === query?.end && next?.query === query?.query) return;
+    if (next && !loaded) void ensureLoaded();
     setQuery(next); setActive(0);
   }
   function choose(item) {
@@ -34,13 +37,15 @@ export function Composer({ input, text, onChange, onSubmit, pending, onCancel, p
   async function submit(event) {
     event.preventDefault();
     if (pending || !text.trim()) return;
+    if (needsSetup) { if (settings || settingsError) openSettings(); return; }
     const sent = await onSubmit(event, selected.map(({ id, type, start, end }) => ({ id, type, start, end })));
     if (sent) { setSelection(draftKey, []); setQuery(null); }
   }
   return <form className={`composer ${className}`} onSubmit={submit}>
     {query && <div className="plugin-picker">
       <div id={listId} role="listbox" aria-label="选择插件">{options.map((item, i) => <button id={`${listId}-${i}`} type="button" role="option" aria-selected={i === index} key={pluginKey(item)} tabIndex={-1} onMouseDown={e => e.preventDefault()} onClick={() => choose(item)}><PluginIcon plugin={item} size={22} /><span className="plugin-option-label"><b>{item.name}</b><small>{pluginTypes[item.type]}</small></span><small className={item.ready ? 'plugin-ready' : ''}>{pluginStatus(item)}</small></button>)}</div>
-      {!options.length && <p role="status">{loading ? '正在读取插件…' : error || '没有匹配的可用插件'}</p>}
+      {loading && <p role="status">正在读取插件…</p>}
+      {!loading && !options.length && <p role="status">{error || '没有匹配的可用插件'}</p>}
       {error && <button className="auto-link" type="button" onMouseDown={e => e.preventDefault()} onClick={refresh}>重新加载</button>}
     </div>}
     <InlinePluginInput input={input} text={text} selected={selected} plugins={plugins} draftKey={draftKey} caretRequest={caretRequest}
@@ -54,7 +59,6 @@ export function Composer({ input, text, onChange, onSubmit, pending, onCancel, p
         if (query && ['Enter', 'Tab'].includes(event.key) && !event.shiftKey) { if (options[index]) { event.preventDefault(); choose(options[index]); } else if (event.key === 'Tab') setQuery(null); else event.preventDefault(); return; }
         if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submit(event); }
       }} />
-    {note && <span className="provider-note composer-note">{note}</span>}
-    <div className="composer-actions"><ModelPicker disabled={pending} />{pending && onCancel ? <button type="button" className="send-button cancel-agent" aria-label="停止回复" onClick={onCancel}><Stop size={21} /></button> : <button className="send-button" aria-label={pending ? pendingLabel : '发送'} disabled={pending || !text.trim()}>{pending ? <SpinnerGap size={21} className="spinning" /> : <ArrowUpRight size={24} />}</button>}</div>
+    <div className="composer-actions">{needsSetup ? (settings || settingsError) && <button type="button" className="model-trigger" onClick={openSettings}>配置模型</button> : <ModelPicker disabled={pending} />}{pending && onCancel ? <button type="button" className="send-button cancel-agent" aria-label="停止回复" onClick={onCancel}><Stop size={21} /></button> : <button className="send-button" aria-label={pending ? pendingLabel : '发送'} disabled={pending || !text.trim() || (!settings && !settingsError)}>{pending ? <SpinnerGap size={21} className="spinning" /> : <ArrowUpRight size={24} />}</button>}</div>
   </form>;
 }

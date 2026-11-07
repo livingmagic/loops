@@ -294,6 +294,24 @@ emit('step_finish',{'reason':'stop'})
         self.assertEqual(registry.probe.await_count, 4)
         await registry.close()
 
+    async def test_selected_agent_does_not_wait_for_unrelated_discovery(self):
+        registry = AgentClients()
+        slow = asyncio.Event()
+        async def probe(key):
+            if key == 'mimo':
+                await slow.wait()
+            return {'id': key}
+        registry.probe = probe
+        full = asyncio.create_task(registry.discover())
+        try:
+            selected = await asyncio.wait_for(registry.discover(ids=['codex']), 1)
+            self.assertEqual([item['id'] for item in selected], ['codex'])
+            self.assertFalse(full.done())
+        finally:
+            slow.set()
+            await full
+            await registry.close()
+
 class AgentModelTests(unittest.IsolatedAsyncioTestCase):
     async def test_initialization_persists_once_across_client_changes_and_restart(self):
         with tempfile.TemporaryDirectory() as root:

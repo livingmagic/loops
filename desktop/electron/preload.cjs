@@ -7,6 +7,5 @@ contextBridge.exposeInMainWorld('loops', {
     return () => ipcRenderer.removeListener('loops:event', listener);
   },
   choose: (kind) => ipcRenderer.invoke('loops:choose', kind),
-  reveal: (loopId) => ipcRenderer.invoke('loops:reveal', loopId),
   openUrl: (url) => ipcRenderer.invoke('loops:url', url),
 });

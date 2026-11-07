@@ -191,7 +191,7 @@ export class Host extends EventEmitter {
     if (method === 'model_default') return this.models.default(params.id);
     if (method === 'model_remove') return this.models.remove(params.id);
     if (method === 'models') return this.models.public();
-    if (method === 'settings') { const summary = this.models.public(); const selected = summary.models.find(item => item.id === summary.defaultModelId); return { ...selected, ...summary, homeDirectory: os.homedir(), ...await this.engine.call('environment') }; }
+    if (method === 'settings') { const summary = this.models.public(); const selected = summary.models.find(item => item.id === summary.defaultModelId); return { ...selected, ...summary, homeDirectory: os.homedir(), dataDirectory: this.options.dataDirectory }; }
     if (method === 'chat') {
       if (typeof params.text !== 'string' || !params.text.trim() || params.text.length > 16000) throw new Error('请输入有效的需求或反馈。');
       const isNew = !params.loopId;

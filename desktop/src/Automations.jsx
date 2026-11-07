@@ -1,3 +1,4 @@
+import { createAutomationRefresh } from './automation-refresh.mjs';
 import { PluginMessage } from './PluginContext.jsx';
 import { useContext } from 'react';
 import { ModelContext } from './ModelContext.jsx';
@@ -50,7 +51,7 @@ function AutomationRuns({detail, changed, busy, action, setConfirm, showFile, on
 function AutomationDialogs({ preview, confirm, trash, setPreview, setConfirm, setTrash, action, busy, setView }) { return <>{preview && <div className="dialog-backdrop"><section className="dialog" role="dialog" aria-modal="true" aria-label={preview.title}><header className="dialog-header"><h2>{preview.title}</h2><button className="icon-button" aria-label="关闭文件预览" onClick={() => setPreview(null)}><X size={20} /></button></header><pre className="auto-file-preview">{preview.content}</pre></section></div>}{confirm && <div className="dialog-backdrop"><section className="dialog" role="dialog" aria-modal="true" aria-label="确认操作"><header className="dialog-header"><h2>{confirm.kind === 'delete' ? '删除自动化任务' : confirm.kind === 'retry' ? '从失败处继续' : confirm.kind === 'output' ? '试投递输出' : '运行输入'}</h2></header><div className="contract-details"><p>{confirm.kind === 'delete' ? '删除后停止采集，保留队列与历史记录，可在回收站恢复。' : confirm.kind === 'retry' ? '已完成的节点会保留。请先核对失败节点是否已产生外部操作，继续执行可能再次写入外部系统。' : confirm.kind === 'output' ? '将使用已有 Loop 产出，实际投递到此输出节点配置的目标，不重新执行 Loop。' : '将使用这份输入和当前已保存任务版本执行所有 Loop，并实际投递到配置的输出位置。'}</p></div><div className="dialog-actions"><button className="button button-secondary" onClick={() => setConfirm(null)}>取消</button><button className="button button-primary" disabled={Boolean(busy)} onClick={async () => { if (confirm.kind === 'delete') { const result = await action('automation_delete');  } else if (confirm.kind === 'retry') await action('automation_retry', { runId: confirm.run.id, confirm: true }); else if (confirm.kind === 'output') { await action('automation_test_output', { runId: confirm.run.id, nodeId: confirm.nodeId }); setView('runs'); } else await action('automation_run', { runId: confirm.run.id }); setConfirm(null); }}>确认{confirm.kind === 'delete' ? '删除' : confirm.kind === 'retry' ? '继续' : confirm.kind === 'output' ? '投递' : '运行'}</button></div></section></div>}{trash && <div className="dialog-backdrop"><section className="dialog" role="dialog" aria-modal="true" aria-label="自动化回收站"><header className="dialog-header"><h2>自动化回收站</h2><button className="icon-button" aria-label="关闭回收站" onClick={() => setTrash(null)}><X size={20} /></button></header><div className="contract-details">{!trash.length && <p>回收站为空</p>}{trash.map(t => <div className="trash-row" key={t.id}><span>{t.title}</span><button className="button button-secondary" onClick={async () => { const result = await action('automation_restore', { taskId: t.id }); if (result) setTrash(trash.filter(i => i.id !== t.id)); }}>恢复</button></div>)}</div></section></div>}</>;
 }
 
-export function Automations({ initialLoopId, onLoop, configured, chatDrafts, setChatDrafts }) {
+export function Automations({ initialLoopId, onLoop, chatDrafts, setChatDrafts }) {
   const { modelId } = useContext(ModelContext);
   const remembered = () => { try { return sessionStorage.getItem('loops-automation-active'); } catch { return null; } };
   const [items, setItems] = useState([]), [catalog, setCatalog] = useState([]), [selected, select] = useState(initialLoopId ? null : remembered);
@@ -60,32 +61,35 @@ export function Automations({ initialLoopId, onLoop, configured, chatDrafts, set
   const [view, setView] = useState('conversation'), [error, setError] = useState(''), [busy, setBusy] = useState('');
   const [chatBusy, setChatBusy] = useState(false), [stream, setStream] = useState(''), [submitting, setSubmitting] = useState(false);
   const [preview, setPreview] = useState(null), [confirm, setConfirm] = useState(null), [trash, setTrash] = useState(null);
-  const selectedRef = useRef(selected), sequence = useRef(0), sending = useRef(false), input = useRef(null), bottom = useRef(null), follow = useRef(true);
+  const selectedRef = useRef(selected), initialList = useRef(true), sending = useRef(false), input = useRef(null), bottom = useRef(null), follow = useRef(true);
   function remember(id) { try { if (id) sessionStorage.setItem('loops-automation-active', id); else sessionStorage.removeItem('loops-automation-active'); } catch {} }
-  async function refresh(id = selectedRef.current) {
-    const [tasks, loops] = await Promise.all([request('automation_list'), request('automation_catalog')]);
-    setItems(tasks); setCatalog(loops);
-    if (id) {
-      const number = ++sequence.current;
-      const value = await request('automation_get', { taskId: id });
-      if (number !== sequence.current || selectedRef.current !== id) return tasks;
-      setDetail(value); setChatBusy(Boolean(value.chatBusy)); setStream(value.chatText || '');
+  const [loader] = useState(() => createAutomationRefresh(request, {
+    onItems: tasks => {
+      setItems(tasks); setLoaded(true);
+      if (initialList.current && !tasks.length && !selectedRef.current) setScreen('new');
+      initialList.current = false;
+    },
+    onCatalog: setCatalog,
+    onDetail: (value, id, chatChanged) => {
+      if (selectedRef.current !== id) return;
+      setDetail(value);
+      if (!chatChanged) { setChatBusy(Boolean(value.chatBusy)); setStream(value.chatText || ''); }
       setSpec(value.draftSpec || value.spec);
-    }
-    return tasks;
-  }
+    },
+  }));
+  const refresh = (id = selectedRef.current, options) => loader.refresh(id, options);
   useEffect(() => {
     let alive = true;
-    refresh().then(tasks => { if (alive) { setLoaded(true); if (!tasks.length && !selectedRef.current) setScreen('new'); } }).catch(e => { if (alive) { setError(e.message); setLoaded(true); } });
+    refresh(selectedRef.current, { includeCatalog: true }).catch(e => { if (alive) { setError(e.message); setLoaded(true); } });
     const off = subscribe(event => {
       const current = event.taskId === selectedRef.current;
       if (event.event === 'automation_agent_start' && current) { setChatBusy(true); setStream(''); }
       if (event.event === 'automation_agent_delta' && current) setStream(old => old + event.text);
       if (event.event === 'automation_agent_done' && current) { setChatBusy(false); setStream(''); }
-      if (['state', 'automation_state', 'automation_agent_done', 'automation_draft_updated', 'connected'].includes(event.event)) refresh().catch(e => alive && setError(e.message));
+      loader.refreshEvent(event, selectedRef.current).catch(e => alive && setError(e.message));
       if (['engine_error', 'connection_error'].includes(event.event)) { setError(event.message); setChatBusy(false); }
     });
-    return () => { alive = false; off(); };
+    return () => { alive = false; off(); loader.close(); };
   }, []);
   useEffect(() => { input.current?.focus(); follow.current = true; }, [screen, selected]);
   useEffect(() => { if (follow.current) bottom.current?.scrollIntoView({ block: 'end' }); }, [detail?.messages?.length, detail?.runs?.length, stream]);
@@ -106,12 +110,14 @@ export function Automations({ initialLoopId, onLoop, configured, chatDrafts, set
   const working = Boolean(busy || submitting || chatBusy);
   const locked = Boolean(detail?.enabled || working);
   function clearSelection(nextScreen) {
+    loader.cancelDetail();
     selectedRef.current = null; select(null); remember(null); setDetail(null); setSpec(null); setScreen(nextScreen); setError(''); setNotice(''); setStream(''); setChatBusy(false); setView('conversation');
   }
   function leave(nextScreen) {
     clearSelection(nextScreen);
   }
   async function choose(id) {
+    loader.cancelDetail();
     selectedRef.current = id; select(id); remember(id); setSpec(null); setDetail(null); setScreen('task'); setView('conversation'); setError(''); setNotice('');
     try { await refresh(id); } catch (e) { setError(e.message); }
   }
@@ -121,7 +127,8 @@ export function Automations({ initialLoopId, onLoop, configured, chatDrafts, set
       const result = await request(name, { taskId: selectedRef.current, ...params });
       if (name === 'automation_delete') clearSelection('list');
       if (name === 'automation_save') { setDetail(result); setSpec(result.spec); }
-      await refresh(); return result;
+      if (name !== 'automation_file') await refresh(selectedRef.current, { invalidate: true });
+      return result;
     } catch (e) { setError(e.message); return null; }
     finally { setBusy(''); }
   }
@@ -135,7 +142,7 @@ export function Automations({ initialLoopId, onLoop, configured, chatDrafts, set
       const result = await request('automation_chat', { ...(selectedRef.current ? { taskId: selectedRef.current } : {}), seedLoopId: initialLoopId, text, modelId, plugins });
       if (result.taskId) { selectedRef.current = result.taskId; select(result.taskId); remember(result.taskId); setScreen('task'); }
       setChatDrafts(old => ({ ...old, [draftId]: '' }));
-      await refresh(result.taskId).catch(e => setError(e.message));
+      await refresh(result.taskId, { invalidate: true }).catch(e => setError(e.message));
       return true;
     } catch (e) { setError(e.message); }
     finally { sending.current = false; setSubmitting(false); input.current?.focus(); }
@@ -159,7 +166,7 @@ export function Automations({ initialLoopId, onLoop, configured, chatDrafts, set
       {screen === 'list' && <button className="button button-secondary" onClick={() => leave('new')} disabled={submitting}><Plus size={18} />新建任务</button>}
     </div></header>
     {screen === 'list' ? <section className="auto-dashboard" aria-label="自动化任务列表">{error && <p className="form-error" role="alert">{error}</p>}{!loaded ? <p>正在加载…</p> : !items.length ? <div className="auto-empty"><h2>描述你希望自动完成的工作</h2><button className="button button-primary" onClick={() => leave('new')}>创建自动化任务</button></div> : items.map(item => <button className="auto-task-row" key={item.id} onClick={() => choose(item.id)}><b>{item.title}</b><TaskStatus task={item} /><span className={`auto-latest-run state-${item.latestRun?.status || 'empty'}`}>{item.latestRun ? labels[item.latestRun.status] : '尚未运行'}</span><CaretRight size={17} /></button>)}<button className="auto-trash" onClick={async () => setTrash(await action('automation_trash'))}>回收站</button></section>
-    : screen === 'new' ? <NewLoop draftKey={`automation:${draftId}`} input={input} text={text} onChange={value => setChatDrafts(old => ({ ...old, [draftId]: value }))} onSubmit={send} pending={submitting} configured={configured} title="你希望如何自动运行 Loop？" pageLabel="新建自动化任务" placeholder="描述何时获取哪些数据、使用哪些 Loop，以及把结果送到哪里…" pendingLabel="正在创建自动化任务" error={error} onDismissError={() => setError('')} />
+    : screen === 'new' ? <NewLoop draftKey={`automation:${draftId}`} input={input} text={text} onChange={value => setChatDrafts(old => ({ ...old, [draftId]: value }))} onSubmit={send} pending={submitting} title="你希望如何自动运行 Loop？" pageLabel="新建自动化任务" placeholder="描述何时获取哪些数据、使用哪些 Loop，以及把结果送到哪里…" pendingLabel="正在创建自动化任务" error={error} onDismissError={() => setError('')} />
     : <><div className="auto-tabs auto-main-tabs" role="tablist" aria-label="任务视图"><button role="tab" aria-selected={view === 'conversation'} onClick={() => setView('conversation')}>对话</button><button role="tab" aria-selected={view === 'runs'} onClick={() => setView('runs')}>运行记录 ({detail?.runs.length || 0})</button></div>
       {error && <div className="service-error" role="alert"><span>{error}</span><button aria-label="关闭自动化错误" onClick={() => setError('')}><X size={18} /></button></div>}
       {notice && <p className="auto-notice" role="status">{notice}</p>}

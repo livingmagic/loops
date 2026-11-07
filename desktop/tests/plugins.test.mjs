@@ -102,3 +102,16 @@ test('message chips preserve exact positions, including identical names and trim
   assert.equal(messagePluginParts('用 /工具 读取',[plugins[0]]).remaining.length,0);
   assert.equal(messagePluginParts('用 /工具 读取，再用 /工具 处理',plugins).remaining.length,2);
 });
+
+test('MCP-only selections never discover Agents; Agent-only selections only request their ids', async () => {
+  const calls = [];
+  const engine = { call: async (method, params) => {
+    calls.push({method,params});
+    return catalogEngine.call(method);
+  }};
+  await resolvePlugins(engine, [{id:'remote',type:'mcp'}]);
+  assert.deepEqual(calls.map(call => call.method), ['connector_list','connector_presets']);
+  calls.length = 0;
+  await resolvePlugins(engine, [{id:'same',type:'agent'}]);
+  assert.deepEqual(calls, [{method:'agent_clients',params:{ids:['same']}}]);
+});

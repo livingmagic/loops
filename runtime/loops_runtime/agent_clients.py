@@ -73,8 +73,8 @@ class AgentClients:
         self._initialized = {key for key, value in self._models.items() if isinstance(value, dict) and value.get('initialized')}
         self._efforts = {key: value.get('reasoning') for key, value in self._models.items() if isinstance(value, dict)}
         self._models = {key: value.get('model') if isinstance(value, dict) else value for key, value in self._models.items()}
-        self._discovery = None
-        self._checked_at = 0
+        self._discovery = {}
+        self._checked_at = {}
 
     def save_model(self, client_id, model, reasoning=None):
         validate_agent_id(client_id)
@@ -87,13 +87,13 @@ class AgentClients:
             temporary = self.settings_path.with_suffix('.tmp')
             temporary.write_text(json.dumps({key: {'model': value, 'reasoning': self._efforts.get(key), 'initialized': key in self._initialized} for key, value in self._models.items()}, ensure_ascii=False, indent=2))
             temporary.replace(self.settings_path)
-        self._checked_at = 0
+        self._checked_at[client_id] = 0
 
     async def configure_model(self, client_id, model, reasoning=None):
         validate_agent_id(client_id)
         validate_model(model)
         validate_model(reasoning)
-        states = await self.discover()
+        states = await self.discover(ids=[client_id])
         state = next(s for s in states if s['id'] == client_id)
         if not model:
             raise ValueError('请选择明确的模型。')
@@ -106,10 +106,9 @@ class AgentClients:
         if reasoning and (not entry or reasoning not in entry['reasoningLevels']):
             raise ValueError('当前模型不支持此思考强度，请重新选择。')
         self.save_model(client_id, model, reasoning)
-        updated = {**state, 'defaultModel': model, 'defaultReasoning': reasoning}
-        states[states.index(state)] = updated
-        self._checked_at = time.monotonic()
-        return updated
+        state.update(defaultModel=model, defaultReasoning=reasoning)
+        self._checked_at[client_id] = time.monotonic()
+        return state
 
     async def model_state(self, state):
         key = state['id']
@@ -157,17 +156,30 @@ class AgentClients:
             state['detail'] = '无法检查客户端，请打开客户端确认安装、登录和本机访问权限。'
         return state
 
-    async def discover(self, refresh=False):
-        if self._discovery is None or self._discovery.done() and (refresh or time.monotonic() - self._checked_at > 30):
-            self._discovery = asyncio.ensure_future(asyncio.gather(*(self.configured_probe(key) for key in CLIENTS)))
-            self._checked_at = time.monotonic()
-        return await asyncio.shield(self._discovery)
+    async def discover(self, refresh=False, ids=None):
+        if ids is not None and (not isinstance(ids, list) or len(ids) > 100):
+            raise ValueError('请选择支持的执行 Agent。')
+        keys = list(CLIENTS) if ids is None else list(dict.fromkeys(validate_agent_id(key) for key in ids))
+        jobs = []
+        for key in keys:
+            job = self._discovery.get(key)
+            expired = time.monotonic() - self._checked_at.get(key, 0) > 30
+            if job is None or job.done() and (refresh or expired or job.cancelled() or job.exception()):
+                job = asyncio.create_task(self.configured_probe(key))
+                self._discovery[key] = job
+                def checked(finished, agent_id=key):
+                    if self._discovery.get(agent_id) is finished:
+                        self._checked_at[agent_id] = time.monotonic()
+                job.add_done_callback(checked)
+            jobs.append(job)
+        return await asyncio.shield(asyncio.gather(*jobs))
 
     async def close(self):
-        if self._discovery is not None:
-            if not self._discovery.done():
-                self._discovery.cancel()
-            await asyncio.gather(self._discovery, return_exceptions=True)
+        jobs = list(self._discovery.values())
+        for job in jobs:
+            if not job.done():
+                job.cancel()
+        await asyncio.gather(*jobs, return_exceptions=True)
 
     async def bind(self, definition, config):
         needed = {}
