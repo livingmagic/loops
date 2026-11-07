@@ -1,9 +1,9 @@
-const brandIcons = { codex: 'codex.png', mimo: 'mimo.ico', feishu: 'feishu-official.png', wecom: 'wecom.png', tapd: 'tapd.png', 'tencent-docs': 'tencent-docs.ico', github: 'github.svg' };
+const brandIcons = { codex: 'codex.png', mimo: 'mimo.ico', feishu: 'feishu-official.png', 'feishu-project': 'feishu-project.png', wecom: 'wecom.png', tapd: 'tapd.png', 'tencent-docs': 'tencent-docs.ico', github: 'github.svg' };
 // Normalize the visible mark to ~90% of the slot, accounting for source padding.
 // Shared by cards, the slash picker, editable mentions and saved messages.
 const brandMetrics = {
   codex: { scale: 1.5 }, mimo: { scale: .9 }, feishu: { scale: 1, x: -1, y: 3 },
-  wecom: { scale: .9, y: 1 }, tapd: { scale: .9 },
+  'feishu-project': { scale: .9 }, wecom: { scale: .9, y: 1 }, tapd: { scale: .9 },
   'tencent-docs': { scale: .93, x: 1.5 }, github: { scale: .9 },
 };
 

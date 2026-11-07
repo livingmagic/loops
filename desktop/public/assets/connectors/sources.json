@@ -53,5 +53,13 @@
     "archiveEntry": "GitHub Logos/SVG/GitHub_Invertocat_Black.svg",
     "sha256": "693d7abe6f899646cc2e96856723b45e95f71885a54910b2749f6decdf7e1ee1",
     "retrievedAt": "2026-11-05"
+  },
+  {
+    "file": "feishu-project.png",
+    "source": "https://sf3-cn.feishucdn.com/obj/meego-static/front/static/20251121-114942.png",
+    "contentType": "image/png",
+    "sha256": "d565a970cb67eaaf38bca7f86e4d2d26fef6c6ac2382d982a57e5608aa863d0a",
+    "bytes": 51993,
+    "retrievedAt": "2026-11-07"
   }
 ]

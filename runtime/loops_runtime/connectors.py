@@ -611,9 +611,12 @@ class Connectors:
                     item['risk'] = declared_risk({'annotations': item.get('annotations', {})})
                     item['effect'] = 'read' if item['risk'] == 'read' else 'write'
                     item['sourceHash'] = self.mcp_source_hash(item)
+                    # A conservative destructive hint alone does not establish
+                    # whether the operation writes. Keep its risk until reviewed.
+                    item['riskReviewable'] = item.get('annotations', {}).get('readOnlyHint') is None
                     review = self.entry(key).get('mcpReviews', {}).get(tool.name)
-                    if item['risk'] == 'unknown' and review and review['sourceHash'] == item['sourceHash']:
-                        item.update(risk=review['risk'], effect='read' if review['risk'] == 'read' else 'write', riskAssessment=review)
+                    if item['riskReviewable'] and review and review['sourceHash'] == item['sourceHash']:
+                        item.update(risk=review['risk'], effect='read' if review['risk'] == 'read' else 'write', riskAssessment=review, riskReviewable=False)
                     tools.append(item)
                 cursor = page.nextCursor
                 if not cursor:
@@ -633,7 +636,7 @@ class Connectors:
     @staticmethod
     def mcp_source_hash(tool):
         from .cli_discovery import digest
-        return digest({k:v for k,v in tool.items() if k not in {'effect', 'risk', 'sourceHash', 'riskAssessment'}})
+        return digest({k:v for k,v in tool.items() if k not in {'effect', 'risk', 'sourceHash', 'riskAssessment', 'riskReviewable'}})
 
     @staticmethod
     def frozen_mcp(tool, kind='mcp'):
@@ -706,7 +709,7 @@ class Connectors:
                     raise ValueError('请提供有效的操作索引分页或检索条件。')
                 matches = sorted((t for t in tools if not query or query.casefold() in
                                   ' '.join(str(t.get(k, '')) for k in ('name', 'title', 'description')).casefold()), key=lambda t: t['name'])
-                operations = [{k: t[k] for k in ('name', 'title', 'effect', 'risk') if k in t}
+                operations = [{k: t[k] for k in ('name', 'title', 'effect', 'risk', 'riskReviewable') if k in t}
                               | {'description': t.get('description', '')[:240]} for t in matches[offset:offset + limit]]
                 return {'operations': operations, 'total': len(matches), 'offset': offset,
                         'nextOffset': offset + limit if offset + limit < len(matches) else None}
@@ -715,13 +718,17 @@ class Connectors:
                 raise ValueError('插件中没有这项操作。')
             if method == 'connector_review_operation':
                 risk, evidence = params['risk'], params['evidence']
-                if tool['risk'] != 'unknown':
+                if not tool.get('riskReviewable', tool['risk'] == 'unknown'):
                     raise ValueError('只能评估未声明风险的操作，不能覆盖服务声明或已有评估。')
+                if self.entry(key)['manifest']['type'] == 'mcp' and params.get('sourceHash') != tool['sourceHash']:
+                    raise ValueError('请重新检查完整操作契约，并提交该契约的 sourceHash；过期评估不能应用于新契约。')
                 if risk not in {'read', 'write', 'high-risk-write'} or not isinstance(evidence, str) or not 10 <= len(evidence) <= 2000:
                     raise ValueError('请根据完整 Schema 和说明提供读写影响及判断依据。')
                 review = {'source': 'task-author', 'sourceHash': tool['sourceHash'], 'risk': risk, 'evidence': self.redact(evidence)}
                 self.entry(key).setdefault('mcpReviews', {})[tool['name']] = review
                 tool.update(risk=risk, effect='read' if risk == 'read' else 'write', riskAssessment=review)
+                if 'riskReviewable' in tool:
+                    tool['riskReviewable'] = False
             self.entry(key)['tools'] = tools; self.persist()
             return copy.deepcopy(tool)
 
