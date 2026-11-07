@@ -9,6 +9,8 @@ def presets():
              "login": ["auth", "login", "--domain", "docs,im,drive,wiki", "--scope", "offline_access"],
              "logout": ["auth", "logout"]},
          },
+        {"id": "feishu-project", "name": "飞书项目", "description": "查询、创建和更新飞书项目中的数据", "type": "mcp", "version": "1", "provider": "feishu-project",
+         "transport": "http", "url": "https://project.feishu.cn/mcp_server/v1", "auth": {"mode": "oauth"}},
         {"id": "wecom", "name": "企业微信", "type": "cli", "version": "1", "provider": "wecom",
          "command": ["wecom-cli"], "package": "@wecom/cli", "auth": {
              "mode": "cli", "status": ["auth", "show", "--status"],

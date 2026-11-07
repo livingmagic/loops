@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from contextlib import asynccontextmanager
 
-from mcp.types import ListToolsResult, Tool, ToolAnnotations
+from mcp.types import CallToolResult, ListToolsResult, Tool, ToolAnnotations
 from loops_runtime.connectors import Connectors, ConnectorFailure
 
 
@@ -21,6 +21,7 @@ class MetadataConnectors(Connectors):
     def __init__(self, root, tools):
         super().__init__(root, lambda event: None, vault=MemoryVault())
         self.metadata = tools
+        self.calls = []
 
     @asynccontextmanager
     async def session(self, key, interactive=False):
@@ -28,10 +29,81 @@ class MetadataConnectors(Connectors):
         class Session:
             async def list_tools(self, cursor=None):
                 return ListToolsResult(tools=owner.metadata)
+            async def call_tool(self, operation, arguments):
+                owner.calls.append((operation, arguments))
+                return CallToolResult(content=[], structuredContent={'items': [42]})
         yield Session()
 
 
 class ConnectorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_incomplete_mcp_hints_require_versioned_review_before_reading(self):
+        for hints in ({'destructiveHint': True}, {'destructiveHint': False}, {}, None):
+            with self.subTest(hints=hints), tempfile.TemporaryDirectory() as directory:
+                metadata = [Tool(name='catalog', description='Returns the visible catalog without changing it.',
+                                 inputSchema={'type': 'object'},
+                                 annotations=ToolAnnotations(**hints) if hints is not None else None)]
+                broker = MetadataConnectors(directory, metadata)
+                broker.save({'id': 'remote', 'name': 'Remote', 'type': 'mcp',
+                             'url': 'https://example.invalid/mcp', 'auth': {'mode': 'none'}})
+                await broker.check('remote')
+                params = {'connectorId': 'remote', 'operation': 'catalog'}
+                detail = await broker.tool_operation('remote', 'connector_describe', params)
+                self.assertTrue(detail['riskReviewable'])
+                with self.assertRaisesRegex(ConnectorFailure, '只读'):
+                    await broker.preview('remote', 'catalog', {})
+                with self.assertRaises(ConnectorFailure):
+                    broker.frozen_mcp(detail)
+                review = {**params, 'risk': 'read', 'sourceHash': detail['sourceHash'],
+                          'evidence': 'The full description promises a catalog read; the schema has no mutation input.'}
+                for source_hash in (None, 'stale'):
+                    with self.assertRaisesRegex(ValueError, '重新检查'):
+                        await broker.tool_operation('remote', 'connector_review_operation', {**review, 'sourceHash': source_hash})
+                with self.assertRaises(ValueError):
+                    await broker.tool_operation('remote', 'connector_review_operation', {**review, 'evidence': ''})
+                assessed = await broker.tool_operation('remote', 'connector_review_operation', review)
+                self.assertEqual(broker.calls, [])
+                self.assertEqual(assessed['risk'], 'read')
+                self.assertFalse(assessed['riskReviewable'])
+                self.assertEqual(assessed.get('annotations'), detail.get('annotations'))
+                frozen = broker.frozen_mcp(assessed)
+                self.assertEqual((await broker.preview('remote', 'catalog', {}))['response']['payload'], {'items': [42]})
+                # A new broker must reuse the review, but a metadata change must invalidate it.
+                broker = MetadataConnectors(directory, metadata)
+                self.assertEqual((await broker.preview('remote', 'catalog', {}))['response']['payload'], {'items': [42]})
+                metadata[0].description = 'Removes the catalog.'
+                changed = await broker.tool_operation('remote', 'connector_describe', params)
+                self.assertTrue(changed['riskReviewable'])
+                self.assertNotIn('riskAssessment', changed)
+                with self.assertRaisesRegex(ConnectorFailure, '只读'):
+                    await broker.preview('remote', 'catalog', {})
+                with self.assertRaisesRegex(ConnectorFailure, '读写评估已改变'):
+                    await broker.call('remote', 'catalog', {}, role='output', expected_contract=frozen)
+                with self.assertRaisesRegex(ValueError, '重新检查'):
+                    await broker.tool_operation('remote', 'connector_review_operation', review)
+                metadata[0].annotations = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
+                with self.assertRaisesRegex(ValueError, '不能覆盖'):
+                    await broker.tool_operation('remote', 'connector_review_operation', review)
+
+    async def test_mcp_review_does_not_make_reviewed_writes_readable_or_destructive_tools_freezable(self):
+        for risk in ('write', 'high-risk-write'):
+            with self.subTest(risk=risk), tempfile.TemporaryDirectory() as directory:
+                broker = MetadataConnectors(directory, [Tool(name='get_records',
+                    description='Replaces existing records.', inputSchema={'type': 'object'},
+                    annotations=ToolAnnotations(destructiveHint=True))])
+                broker.save({'id': 'remote', 'name': 'Remote', 'type': 'mcp',
+                             'url': 'https://example.invalid/mcp', 'auth': {'mode': 'none'}})
+                await broker.check('remote')
+                params = {'connectorId': 'remote', 'operation': 'get_records'}
+                detail = await broker.tool_operation('remote', 'connector_describe', params)
+                reviewed = await broker.tool_operation('remote', 'connector_review_operation', {**params, 'risk': risk,
+                    'sourceHash': detail['sourceHash'], 'evidence': 'The description specifies replacement, despite the query-like operation name.'})
+                with self.assertRaisesRegex(ConnectorFailure, '只读'):
+                    await broker.preview('remote', 'get_records', {})
+                if risk == 'high-risk-write':
+                    with self.assertRaises(ConnectorFailure):
+                        broker.frozen_mcp(reviewed)
+                self.assertEqual(broker.calls, [])
+
     async def test_manual_cli_metadata_and_calls_share_identity_and_read_write_rules(self):
         with tempfile.TemporaryDirectory() as directory:
             broker = Connectors(directory, lambda event: None, vault=MemoryVault())
