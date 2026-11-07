@@ -6,6 +6,8 @@ import json
 import os
 import socket
 import ssl
+import struct
+import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,6 +15,30 @@ from urllib.parse import urlsplit
 
 GROUP, DISCOVERY_PORT = '239.255.76.80', 45871
 MAX_BODY = 15 * 1024 * 1024
+
+
+def local_addresses():
+    """Read assigned IPv4 addresses without DNS or network round trips."""
+    addresses = {'127.0.0.1'}
+    # SIOCGIFADDR from Darwin sys/sockio.h and Linux linux/sockios.h.
+    operation = {'darwin': 0xc0206921, 'linux': 0x8915}.get(sys.platform)
+    if operation is None:
+        return addresses
+    import fcntl
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            for _, name in socket.if_nameindex():
+                try:
+                    result = fcntl.ioctl(sock.fileno(), operation, struct.pack('256s', name.encode()))
+                    # ifreq starts with a 16-byte name, then sockaddr_in.sin_addr at offset 4.
+                    address = socket.inet_ntoa(result[20:24])
+                    if address != '0.0.0.0':
+                        addresses.add(address)
+                except OSError:  # Interfaces without an IPv4 address are expected.
+                    continue
+    except OSError:
+        pass
+    return addresses
 
 
 def certificate(directory, name):

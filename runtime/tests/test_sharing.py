@@ -5,8 +5,11 @@ import tempfile
 import secrets
 import time
 import sys
+import socket
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+from urllib.parse import urlsplit
 
 from loops_runtime.bridge import Service
 from loops_runtime.sharing_network import request
@@ -99,6 +102,17 @@ class SharingTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(peer['token'], json.dumps(self.host.sharing.state()))
         self.assertNotIn(peer['token'], json.dumps(self.client.sharing.state()))
         self.assertEqual((self.client.sharing.directory / 'peers' / f"{peer['id']}.json").stat().st_mode & 0o777, 0o600)
+
+    async def test_state_reads_local_interfaces_without_dns(self):
+        # A slow or unavailable hostname resolver must never block the IPC event loop.
+        with patch('socket.gethostbyname_ex', side_effect=AssertionError('DNS lookup')), patch('socket.getaddrinfo', side_effect=AssertionError('DNS lookup')):
+            state = await self.host.handle('sharing_state', {})
+        self.assertIn(self.address, state['addresses'])
+        for address in state['addresses']:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                probe.bind((urlsplit(address).hostname, 0))
+        with patch('socket.if_nameindex', side_effect=OSError('Interfaces unavailable')):
+            self.assertEqual((await self.host.handle('sharing_state', {}))['addresses'], [self.address])
 
     async def test_local_history_detail_and_file_stay_in_sharing(self):
         loop = await self.build()

@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 
 from .definition import declared_outputs
-from .sharing_network import Discovery, MAX_BODY, certificate, discover, pairing_code, request
+from .sharing_network import Discovery, MAX_BODY, certificate, discover, local_addresses, pairing_code, request
 from .store import ACTIVE, now, uid
 from .workflow import create_run
 
@@ -389,14 +389,7 @@ class Sharing:
         clients = self.rows('client')
         for client in clients:
             self.expire_client(client)
-        addresses = {'127.0.0.1'}
-        try:
-            addresses.update(socket.gethostbyname_ex(socket.gethostname())[2])
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-                probe.connect(('192.0.2.1', 9))
-                addresses.add(probe.getsockname()[0])
-        except OSError:
-            pass
+        addresses = local_addresses()
         return {'config': self.config, 'online': bool(self.server and self.server.started and self.server_task and not self.server_task.done()), 'error': self.error,
                 'addresses': [f'https://{host}:{self.config["port"]}' for host in sorted(addresses)] if self.config['port'] else [],
                 'pastFlows': list({job['loopId']: {'id': job['loopId'], 'name': job['name'], 'revision': job['revision']} for job in self.rows('task')}.values()),
