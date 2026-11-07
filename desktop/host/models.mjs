@@ -9,8 +9,9 @@ import { googleProvider } from '@earendil-works/pi-ai/providers/google';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import { thinkingLevel } from './config.mjs';
 import { readLegacyModelConfig } from './legacy-model-config.mjs';
+import { additionalModelProviders } from './model-providers.mjs';
 
-const factories = { deepseek: deepseekProvider, openai: openaiProvider, anthropic: anthropicProvider, google: googleProvider };
+const factories = { deepseek: deepseekProvider, ...additionalModelProviders, openai: openaiProvider, anthropic: anthropicProvider, google: googleProvider };
 export function modelConnection(config) {
   const collection = createModels();
   const provider = config.provider || 'deepseek';
@@ -29,7 +30,8 @@ export function modelConnection(config) {
 export function modelThinking(config) {
   const levels = getSupportedThinkingLevels(modelConnection(config).model);
   const configured = thinkingLevel(config);
-  return { thinkingLevels: levels, thinkingLevel: levels.includes(configured) ? configured : levels[0] };
+  const fallback = levels.includes('low') ? 'low' : levels.find(level => level !== 'off') || levels[0];
+  return { thinkingLevels: levels, thinkingLevel: levels.includes(configured) ? configured : fallback };
 }
 
 export class ModelSettings {
@@ -46,9 +48,17 @@ export class ModelSettings {
     }
     if (state.version === 2) {
       // Earlier versions created a DeepSeek placeholder even without a key.
-      const models = state.models.filter(entry => entry.id !== 'legacy' || entry.provider !== 'deepseek' || state.credentials.deepseek);
+      let thinkingChanged = false;
+      const models = state.models.filter(entry => entry.id !== 'legacy' || entry.provider !== 'deepseek' || state.credentials.deepseek).map(entry => {
+        // Older builds persisted off as the default without tracking user choice.
+        if (entry.thinkingLevel !== 'off' || entry.thinkingLevelExplicit) return entry;
+        const level = modelThinking({ ...entry, thinkingLevel: undefined }).thinkingLevel;
+        if (level === entry.thinkingLevel) return entry;
+        thinkingChanged = true;
+        return { ...entry, thinkingLevel: level };
+      });
       const defaultId = this.configuredDefault({ ...state, models });
-      if (models.length !== state.models.length || defaultId !== state.defaultId) {
+      if (thinkingChanged || models.length !== state.models.length || defaultId !== state.defaultId) {
         state = { ...state, models, defaultId };
         this.write(state);
       }
@@ -92,7 +102,11 @@ export class ModelSettings {
     const state = this.read();
     const models = state.models.map(entry => ({ ...entry, ...modelThinking(entry), configured: Boolean(state.credentials[this.scope(entry)]) }));
     const services = [...new Map(state.models.map(entry => [this.scope(entry), { provider: entry.provider, baseUrl: entry.baseUrl, configured: Boolean(state.credentials[this.scope(entry)]) }])).values()];
-    return { models, services, defaultModelId: state.defaultId, providers: Object.entries(factories).map(([id, factory]) => ({ id, name: factory().name, models: factory().getModels().map(model => ({ id: model.id, name: model.name, thinkingLevels: getSupportedThinkingLevels(model) })) })) };
+    const providers = Object.entries(factories).map(([id, factory]) => {
+      const provider = factory();
+      return { id, name: provider.name, description: provider.description, models: provider.getModels().map(model => ({ id: model.id, name: model.name, thinkingLevels: getSupportedThinkingLevels(model) })) };
+    });
+    return { models, services, defaultModelId: state.defaultId, providers };
   }
   write(state) {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
@@ -104,7 +118,8 @@ export class ModelSettings {
     const state = this.read();
     const existing = params.id && state.models.find(item => item.id === params.id);
     if (params.id && !existing) throw new Error('找不到待编辑的模型。');
-    const entry = { id: existing?.id || randomUUID(), name: String(params.name || '').trim(), provider: params.provider, model: String(params.model || '').trim(), thinkingLevel: existing?.thinkingLevel || 'off' };
+    const entry = { id: existing?.id || randomUUID(), name: String(params.name || '').trim(), provider: params.provider, model: String(params.model || '').trim(), thinkingLevel: existing?.thinkingLevel,
+      thinkingLevelExplicit: existing?.thinkingLevelExplicit || params.thinkingLevel !== undefined };
     if (!entry.name || entry.name.length > 80 || !entry.model || entry.model.length > 200) throw new Error('请填写模型名称和模型 ID。');
     if (entry.provider === 'compatible') {
       let url; try { url = new URL(params.baseUrl); } catch { throw new Error('请输入有效的 API 地址。'); }
@@ -129,6 +144,7 @@ export class ModelSettings {
     if (!entry) throw new Error('模型已移除，请重新选择。');
     if (!modelThinking(entry).thinkingLevels.includes(level)) throw new Error('此模型不支持所选思考强度。');
     entry.thinkingLevel = level;
+    entry.thinkingLevelExplicit = true;
     this.write(state);
     return this.public();
   }
