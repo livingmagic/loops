@@ -18,6 +18,7 @@ export class Host extends EventEmitter {
     super();
     this.options = options; this.models = new ModelSettings(options); this.engine = new Engine({ ...options, modelHost: new WorkflowModels(this.models) }); this.busy = new Map(); this.deleting = new Set(); this.automationJobs = new Map(); this.automationStreams = new Map();
     this.loopJobs = new Map();
+    this.sharedPluginJobs = new Map();
     this.failureReviews = new FailureReviews({
       busy: id => this.busy.has(id) || this.deleting.has(id),
       review: (loopId, runId) => this.reviewFailedRun(loopId, runId),
@@ -123,6 +124,22 @@ export class Host extends EventEmitter {
     return modelFailureMessage(error);
   }
   async action(method, params = {}) {
+    if (method === 'sharing_add_plugin') {
+      const peerId = params.peerId;
+      if (this.sharedPluginJobs.has(peerId)) return this.sharedPluginJobs.get(peerId);
+      const job = (async () => {
+        const state = await this.engine.call('sharing_refresh_peer', { peerId });
+        if (!state.peers.some(peer => peer.id === peerId && peer.status === 'approved')) throw new Error('请先在对方 Loops 同意连接。');
+        const manifest = await this.engine.call('sharing_peer_config', { peerId });
+        const existing = (await this.engine.call('connector_list')).find(item => item.manifest.id === manifest.id);
+        if (existing) return existing;
+        await this.engine.call('connector_save', { manifest });
+        return this.engine.call('connector_connect', { connectorId: manifest.id });
+      })().finally(() => this.sharedPluginJobs.delete(peerId));
+      this.sharedPluginJobs.set(peerId, job);
+      return job;
+    }
+    if (['sharing_client_note', 'sharing_resume', 'sharing_reapply', 'sharing_history', 'sharing_task_detail', 'sharing_task_file', 'sharing_state', 'sharing_settings', 'sharing_publish', 'sharing_unpublish', 'sharing_approve', 'sharing_reject', 'sharing_revoke', 'sharing_cancel', 'sharing_discover', 'sharing_connect', 'sharing_refresh_peer', 'sharing_peer_flows', 'sharing_peer_submit', 'sharing_peer_task', 'sharing_peer_cancel', 'sharing_download', 'sharing_peer_config'].includes(method)) return this.engine.call(method, params);
     if (method === 'plugin_list') return pluginCatalog(this.engine);
     if (method === 'agent_model_default') {
       const result = await this.engine.call(method, params);
@@ -226,6 +243,7 @@ export class Host extends EventEmitter {
     for (const controller of this.busy.values()) controller.abort();
     await Promise.allSettled([this.resumeJob, this.connectorDescriptions.close()]);
     await Promise.allSettled([...this.automationJobs.values(), ...this.loopJobs.values()]);
+    await Promise.allSettled(this.sharedPluginJobs.values());
     await this.engine.close();
   }
 }

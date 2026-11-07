@@ -41,6 +41,13 @@ try {
 if (host) {
   ipcMain.handle('loops:request', async (event, method, params) => {
     trusted(event);
+    if (method === 'sharing_reveal_download') {
+      const target = fs.realpathSync(params.path);
+      const allowed = fs.realpathSync(path.join(dataDirectory, 'sharing', 'downloads')) + path.sep;
+      if (!target.startsWith(allowed) || !fs.statSync(target).isFile()) throw new Error('找不到共享下载文件。');
+      shell.showItemInFolder(target);
+      return true;
+    }
     if (method === 'connector_open_authorization') {
       const connection = (await host.action('connector_list')).find(item => item.manifest.id === params.connectorId);
       const url = connection?.authorization?.url;
