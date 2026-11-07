@@ -39,19 +39,28 @@ export class ModelSettings {
     try { return this.options.encryptSecret(key); } catch { throw new Error('系统安全存储不可用，密钥未保存。'); }
   }
   read() {
-    let state = { models: [], defaultId: 'legacy' };
+    let state = { models: [], defaultId: null };
     if (fs.existsSync(this.file)) {
       try { state = JSON.parse(fs.readFileSync(this.file, 'utf8')); if (!Array.isArray(state.models)) throw new Error(); }
       catch { throw new Error('模型配置无法读取，请检查本地 models.json 文件。'); }
     }
-    if (state.version === 2) return state;
+    if (state.version === 2) {
+      // Earlier versions created a DeepSeek placeholder even without a key.
+      const models = state.models.filter(entry => entry.id !== 'legacy' || entry.provider !== 'deepseek' || state.credentials.deepseek);
+      const defaultId = this.configuredDefault({ ...state, models });
+      if (models.length !== state.models.length || defaultId !== state.defaultId) {
+        state = { ...state, models, defaultId };
+        this.write(state);
+      }
+      return state;
+    }
     // Write the complete upgrade atomically. If secure storage fails, preserve
     // the old configuration and retry next time, never mark migration complete.
     const legacy = readLegacyModelConfig(this.options.configDirectory || this.options.dataDirectory, this.options.fallbackConfigDirectory);
     const migrated = { version: 2, defaultId: state.defaultId, models: [], credentials: {} };
     const initial = { id: 'legacy', name: 'DeepSeek', provider: 'deepseek', model: legacy.model, thinkingLevel: legacy.thinkingLevel };
     if (legacy.key) migrated.credentials.deepseek = this.encrypt(legacy.key);
-    migrated.models.push(initial);
+    if (legacy.key) migrated.models.push(initial);
     // Existing explicit model credentials take precedence over old environment
     // configuration; the default model's credential wins within a service.
     for (const entry of [...state.models].sort((a, b) => Number(a.id === state.defaultId) - Number(b.id === state.defaultId))) {
@@ -59,11 +68,17 @@ export class ModelSettings {
       migrated.models.push(metadata);
       if (secret) migrated.credentials[this.scope(entry)] = secret;
     }
+    migrated.defaultId = this.configuredDefault(migrated);
     this.write(migrated);
     return migrated;
   }
+  configuredDefault(state) {
+    const configured = state.models.filter(entry => state.credentials[this.scope(entry)]);
+    return (configured.find(entry => entry.id === state.defaultId) || configured[0])?.id ?? null;
+  }
   config(id) {
     const state = this.read(); id ||= state.defaultId;
+    if (!id) return { key: '' };
     const entry = state.models.find(item => item.id === id);
     if (!entry) throw new Error('模型已移除，请重新选择。');
     const secret = state.credentials[this.scope(entry)];
@@ -104,6 +119,7 @@ export class ModelSettings {
     if (!key && !state.credentials[scope]) throw new Error('请填写此服务的 API Key。');
     if (key) state.credentials[scope] = this.encrypt(key);
     state.models = [...state.models.filter(item => item.id !== entry.id), entry];
+    state.defaultId ||= entry.id;
     this.write(state);
     return this.public();
   }
@@ -116,7 +132,7 @@ export class ModelSettings {
     this.write(state);
     return this.public();
   }
-  default(id) { if (typeof id !== 'string' || !id) throw new Error('请选择默认模型。'); const state = this.read(); this.config(id); state.defaultId = id; this.write(state); return this.public(); }
+  default(id) { if (typeof id !== 'string' || !id) throw new Error('请选择默认模型。'); const state = this.read(); if (!this.config(id).key) throw new Error('请先配置此模型。'); state.defaultId = id; this.write(state); return this.public(); }
   remove(id) {
     const state = this.read();
     if (state.defaultId === id) throw new Error('请先选择其他默认模型。');

@@ -9,7 +9,7 @@ function RecycleBin({ act }) {
 }
 
 function ModelForm({ item, settings, onSave, onCancel }) {
-  const [provider, setProvider] = useState(item?.provider || 'deepseek');
+  const [provider, setProvider] = useState(item?.provider || '');
   const [baseUrl, setBaseUrl] = useState(item?.baseUrl || '');
   const existingService = settings.services?.some(entry => entry.configured && entry.provider === provider && (provider !== 'compatible' || entry.baseUrl === baseUrl.trim().replace(/\/$/, '')));
   const [working, setWorking] = useState(false), [error, setError] = useState('');
@@ -18,22 +18,23 @@ function ModelForm({ item, settings, onSave, onCancel }) {
   return <form className="settings-card model-form" ref={form} onSubmit={async event => {
     event.preventDefault(); const values = new FormData(form.current); setWorking(true); setError('');
     const apiKey = values.get('apiKey'); form.current.elements.apiKey.value = '';
-    try { await onSave({ id: item?.id, provider, name: values.get('name'), model: values.get('model'), baseUrl: values.get('baseUrl'), apiKey }); }
+    try { await onSave({ id: item?.id, provider, name: values.get('name')?.trim() || values.get('model'), model: values.get('model'), baseUrl: values.get('baseUrl'), apiKey }); }
     catch(e) { setError(e.message); } finally { setWorking(false); }
   }}>
-    <h3>{item ? '编辑模型' : '添加模型'}</h3>
-    <label>名称<input name="name" required maxLength={80} defaultValue={item?.name || ''} placeholder="例如：日常工作" /></label>
-    <label>服务<select value={provider} onChange={e => setProvider(e.target.value)}>{settings.providers?.map(entry => <option value={entry.id} key={entry.id}>{entry.name}</option>)}<option value="compatible">OpenAI 兼容服务</option></select></label>
-    <label>模型{provider === 'compatible' ? <input key={provider} name="model" required defaultValue={item?.provider === provider ? item.model : ''} placeholder="服务提供的模型 ID" /> : <select key={provider} name="model" defaultValue={item?.provider === provider ? item.model : catalog[0]?.id}>{catalog.map(model => <option key={model.id} value={model.id}>{model.name} · {model.id}</option>)}</select>}</label>
-    {provider === 'compatible' && <label>API 地址<input name="baseUrl" required type="url" value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="https://example.com/v1" /></label>}
-    <label>API Key<input name="apiKey" type="password" autoComplete="off" required={!existingService} placeholder={existingService ? '已配置，留空使用此服务的已有密钥' : '输入密钥'} /></label>
-    {existingService && <small className="provider-note">此服务的模型共用密钥，填写新密钥会统一更新。</small>}
+    <label>服务<select required value={provider} onChange={e => setProvider(e.target.value)}><option value="" disabled>请选择服务</option>{settings.providers?.map(entry => <option value={entry.id} key={entry.id}>{entry.name}</option>)}<option value="compatible">OpenAI 兼容服务</option></select></label>
+    {provider && <>
+      <label>模型{provider === 'compatible' ? <input key={provider} name="model" required defaultValue={item?.provider === provider ? item.model : ''} placeholder="服务提供的模型 ID" /> : <select key={provider} name="model" defaultValue={item?.provider === provider ? item.model : catalog[0]?.id}>{catalog.map(model => <option key={model.id} value={model.id}>{model.name} · {model.id}</option>)}</select>}</label>
+      {provider === 'compatible' && <label>API 地址<input name="baseUrl" required type="url" value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="https://example.com/v1" /></label>}
+      <label>名称<input name="name" maxLength={80} defaultValue={item?.name || ''} placeholder="留空使用模型 ID" /></label>
+      <label>API Key<input name="apiKey" type="password" autoComplete="off" required={!existingService} placeholder={existingService ? '已配置，留空使用此服务的已有密钥' : '输入密钥'} /></label>
+      {existingService && <small className="provider-note">此服务的模型共用密钥，填写新密钥会统一更新。</small>}
+    </>}
     {error && <p className="form-error" role="alert">{error}</p>}
-    <div className="settings-actions"><button type="button" className="button button-secondary" onClick={onCancel} disabled={working}>取消</button><button className="button button-primary" disabled={working}>{working ? '保存中…' : '保存'}</button></div>
+    <div className="settings-actions"><button type="button" className="button button-secondary" onClick={onCancel} disabled={working}>取消</button><button className="button button-primary" disabled={working || !provider}>{working ? '保存中…' : '保存'}</button></div>
   </form>;
 }
 
-export function Settings({ settings, refresh, act, onClose }) {
+export function Settings({ settings, loadError, onRetry, updateModels, act, onClose }) {
   const [section, setSection] = useState('models'), [editing, setEditing] = useState(null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const panel = useRef(null);
   useEffect(() => {
@@ -49,15 +50,21 @@ export function Settings({ settings, refresh, act, onClose }) {
     };
     document.addEventListener('keydown', handle); return () => { document.removeEventListener('keydown', handle); previous?.focus(); };
   }, [onClose]);
-  async function change(method, params) { setBusy(true); setError(''); try { await request(method, params); await refresh(); } catch(e) { setError(e.message); throw e; } finally { setBusy(false); } }
+  async function change(method, params) {
+    setBusy(true); setError('');
+    try { updateModels(await request(method, params)); }
+    catch (e) { if (method !== 'model_save') setError(e.message); throw e; }
+    finally { setBusy(false); }
+  }
+  const needsSetup = settings && !settings.defaultModelId;
   const menu = [['general', Gear, '通用'], ['models', Cube, '模型'], ['trash', Trash, '回收站']];
-  return <div className="dialog-backdrop"><section className="settings-window" role="dialog" aria-modal="true" aria-label="设置" tabIndex={-1} ref={panel}>
+  return <div className="dialog-backdrop"><section className="settings-window" role="dialog" aria-modal="true" aria-label={needsSetup && section === 'models' ? '配置模型' : '设置'} tabIndex={-1} ref={panel}>
     <nav className="settings-nav" aria-label="设置分类"><h2>设置</h2>{menu.map(([id, Icon, title]) => <button key={id} className={section === id ? 'selected' : ''} aria-current={section === id ? 'page' : undefined} onClick={() => { setSection(id); setEditing(null); setError(''); }}><Icon size={21} />{title}</button>)}</nav>
-    <div className="settings-content"><header><h2>{menu.find(item => item[0] === section)[2]}</h2><button className="icon-button" aria-label="关闭设置" onClick={onClose}><X size={22} /></button></header>
+    <div className="settings-content"><header><h2>{section === 'models' && needsSetup ? '配置模型' : menu.find(item => item[0] === section)[2]}</h2><button className="icon-button" aria-label="关闭设置" onClick={onClose}><X size={22} /></button></header>
       {error && <p className="form-error" role="alert">{error}</p>}
-      {!settings ? <p>正在加载…</p> : section === 'general' ? <><div className="settings-card"><div className="settings-row"><div><strong>本地数据</strong><small>{settings.dataDirectory}</small></div></div></div></> : section === 'trash' ? <RecycleBin act={act} /> : <>
+      {!settings ? loadError ? <><p className="form-error" role="alert">{loadError}</p><button className="button button-secondary" onClick={onRetry}>重试</button></> : <p>正在加载…</p> : section === 'general' ? <><div className="settings-card"><div className="settings-row"><div><strong>本地数据</strong><small>{settings.dataDirectory}</small></div></div></div></> : section === 'trash' ? <RecycleBin act={act} /> : needsSetup ? <ModelForm settings={settings} onCancel={onClose} onSave={async values => { await change('model_save', values); onClose(); }} /> : <>
         <div className="settings-card"><div className="settings-row"><strong>默认模型</strong><select aria-label="默认模型" disabled={busy} value={settings.defaultModelId} onChange={e => change('model_default', { id: e.target.value }).catch(() => {})}>{settings.models?.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div></div>
-        {editing ? <ModelForm key={editing.id || 'new'} item={editing.id ? editing : null} settings={settings} onCancel={() => setEditing(null)} onSave={async values => { await change('model_save', values); setEditing(null); }} /> : <><div className="settings-card">{settings.models?.map(item => <div className="settings-row" key={item.id}><div><strong>{item.name}</strong><small>{item.model} · {item.configured ? '已配置' : '未配置'}</small></div>{<div className="settings-actions"><button className="button button-secondary" onClick={() => setEditing(item)}>编辑</button><button className="button button-secondary" disabled={busy || item.id === settings.defaultModelId} onClick={() => change('model_remove', { id: item.id }).catch(() => {})}>移除</button></div>}</div>)}</div><button className="button button-primary" onClick={() => setEditing({})}><Plus size={18} />添加模型</button></>}
+        {editing ? <><h3>{editing.id ? '编辑模型' : '添加模型'}</h3><ModelForm key={editing.id || 'new'} item={editing.id ? editing : null} settings={settings} onCancel={() => setEditing(null)} onSave={async values => { await change('model_save', values); setEditing(null); }} /></> : <><div className="settings-card">{settings.models?.map(item => <div className="settings-row" key={item.id}><div><strong>{item.name}</strong><small>{item.model} · {item.configured ? '已配置' : '未配置'}</small></div>{<div className="settings-actions"><button className="button button-secondary" onClick={() => setEditing(item)}>编辑</button><button className="button button-secondary" disabled={busy || item.id === settings.defaultModelId} onClick={() => change('model_remove', { id: item.id }).catch(() => {})}>移除</button></div>}</div>)}</div><button className="button button-primary" onClick={() => setEditing({})}><Plus size={18} />添加模型</button></>}
       </>}
     </div>
   </section></div>;

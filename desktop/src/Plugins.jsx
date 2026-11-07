@@ -133,14 +133,14 @@ function PluginDetails({ item, busy, checking, error, action, onEdit, onClose })
   </section></div>;
 }
 
-export function Plugins({ onAgentsChange }) {
-  const { agents, agentErrors, items, presets, loaded, pageError, refresh: refreshShared, setAgents } = useContext(PluginContext);
+export function Plugins() {
+  const { agents, agentErrors, items, presets, loaded, pageError, ensureLoaded, refresh: refreshShared, refreshConnectors, refreshAgents: refreshAgentState, setAgents } = useContext(PluginContext);
   const [selectedAgent, setSelectedAgent] = useState(null), [filter, setFilter] = useState('all');
   const [editor, setEditor] = useState(null), [selected, setSelected] = useState(null);
   const [error, setError] = useState(''), [busy, setBusy] = useState(''), [pendingAction, setPendingAction] = useState('');
-  const refresh = () => refreshShared({ invalidate: true });
-  const refreshAgents = refresh;
-  useEffect(() => { onAgentsChange(agents); }, [agents, onAgentsChange]);
+  const refresh = () => refreshConnectors({ invalidate: true });
+  const refreshAgents = () => refreshAgentState({ invalidate: true, force: true });
+  useEffect(() => { if (!loaded) void ensureLoaded(); }, [loaded, ensureLoaded]);
   async function action(method, connectorId, extra = {}) {
     setBusy(connectorId); setPendingAction(method); setError('');
     try { await request(method, { connectorId, ...extra }); await refresh(); }
@@ -154,14 +154,14 @@ export function Plugins({ onAgentsChange }) {
     await action('connector_connect', manifest.id);
   }
   return <main className="workspace connectors-workspace"><header className="topbar connectors-topbar"><h1>插件</h1><button className="button button-secondary" onClick={() => setEditor({})}><Plus size={17} />添加插件</button></header>
-    <div className="connectors-body"><div className="connectors-content">{(error || pageError) && !detail && <p className="form-error" role="alert">{error || pageError}</p>}{!loaded && <p className="connector-loading"><SpinnerGap className="spinning" size={18} />正在读取插件…</p>}
+    <div className="connectors-body"><div className="connectors-content">{(error || pageError) && !detail && <p className="form-error" role="alert">{error || pageError}{pageError && <button className="auto-link" onClick={() => refreshShared()}>重试</button>}</p>}{!loaded && <p className="connector-loading"><SpinnerGap className="spinning" size={18} />正在读取插件…</p>}
       <div className="plugin-filters" role="group" aria-label="插件类型">{[['all', '全部'], ...Object.entries(pluginTypes)].map(([type, label]) => <button type="button" key={type} aria-pressed={filter === type} onClick={() => setFilter(type)}>{label}</button>)}</div>
       {agentErrors.map(item => <p key={item.plugin} className="form-error" role="alert">{item.plugin}：{item.message}</p>)}
       <div className="connector-grid">{agents.filter(() => filter === 'all' || filter === 'agent').map(client => <article className="connector-card" key={`agent:${client.id}`}><header><span className="connector-mark"><PluginIcon plugin={{ ...client, type: 'agent' }} size={29} /></span><span className={`connector-status ${client.ready ? 'connected' : 'disconnected'}`}><i />{client.ready ? '可用' : client.installed ? '不可用' : '未安装'}</span></header><h3>{client.name}</h3><p className="connector-description">{client.detail}</p><footer><span className="connector-account">Agent</span><button className="button button-secondary" onClick={() => setSelectedAgent(client.id)}>配置<ArrowRight size={14} /></button></footer></article>)}{[...items, ...presets.filter(p => !installed.has(p.id)).map(manifest => ({ manifest, status: 'disconnected', builtin: true }))].filter(item => filter === 'all' || item.manifest.type === filter).map(item => {
         const { manifest } = item, added = installed.has(manifest.id), connected = item.status === 'connected', working = busy === manifest.id;
         return <article className="connector-card" key={manifest.id}><header><Mark manifest={manifest} /><Status status={item.status} /></header><h3>{manifest.name}</h3><p className="connector-description">{description(manifest, item.generatedDescription, item.builtin)}</p><footer><span className="connector-account">{pluginTypes[manifest.type]}{connected && item.authorizationInfo?.renewable && <span className="connector-auto-renew" title="支持自动续期"><Check size={12} />自动续期</span>}</span><button className={`button ${connected || item.status === 'connecting' ? 'button-secondary' : 'button-primary'}`} disabled={working} aria-label={`${connected ? '管理' : item.status === 'connecting' ? '查看' : '连接'}${manifest.name}`} onClick={() => connected || item.status === 'connecting' || item.credentialRequest ? setSelected(manifest.id) : connect(manifest, added)}>{working && <SpinnerGap className="spinning" size={14} />}{connected ? '管理' : item.status === 'connecting' ? '查看' : '连接'}{!working && <ArrowRight size={14} />}</button></footer></article>;
       })}</div>
-    </div></div>{selectedAgent && <AgentDetails client={agents.find(client => client.id === selectedAgent)} onClose={() => setSelectedAgent(null)} onRefresh={refreshAgents} onSave={async params => { const updated = await request('agent_model_default', params); const next = agents.map(client => client.id === updated.id ? updated : client); setAgents(next); onAgentsChange(next); }} />}{detail && !editor && <PluginDetails item={detail} error={error} busy={busy} checking={busy === selected && pendingAction === 'connector_check'} action={action} onClose={() => setSelected(null)} onEdit={() => { setEditor({ manifest: detail.manifest }); }} />}{editor && <PluginEditor agents={agents} onRefreshAgents={() => refreshAgents().catch(e => setError(e.message))} onAgent={id => { setEditor(null); setSelectedAgent(id); }} initial={editor.manifest} onClose={() => setEditor(null)} onSaved={async (id, connected) => { await refresh(); if (connected) setSelected(id); }} />}
+    </div></div>{selectedAgent && <AgentDetails client={agents.find(client => client.id === selectedAgent)} onClose={() => setSelectedAgent(null)} onRefresh={refreshAgents} onSave={async params => { const updated = await request('agent_model_default', params); const next = agents.map(client => client.id === updated.id ? updated : client); setAgents(next); }} />}{detail && !editor && <PluginDetails item={detail} error={error} busy={busy} checking={busy === selected && pendingAction === 'connector_check'} action={action} onClose={() => setSelected(null)} onEdit={() => { setEditor({ manifest: detail.manifest }); }} />}{editor && <PluginEditor agents={agents} onRefreshAgents={() => refreshAgents().catch(e => setError(e.message))} onAgent={id => { setEditor(null); setSelectedAgent(id); }} initial={editor.manifest} onClose={() => setEditor(null)} onSaved={async (id, connected) => { await refresh(); if (connected) setSelected(id); }} />}
   </main>;
 }
 

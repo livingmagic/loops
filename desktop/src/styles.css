@@ -521,15 +521,6 @@ h1 { margin: 0; font-size: 23px; line-height: 1.35; font-weight: 700; letter-spa
 .directory-trigger > svg { flex-shrink:0; }
 .directory-trigger > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; line-height:1.5; }
 .new-directory { display:flex; align-items:center; min-width:0; gap:4px; }
-.real-client .topbar.has-workdir { min-height:80px; align-items:center; padding-top:14px; padding-bottom:14px; }
-.loop-title-button { display:flex; align-items:center; gap:10px; min-width:0; max-width:100%; padding:0; border:0; border-radius:4px; background:none; color:inherit; font:inherit; text-align:left; cursor:pointer; }
-.loop-title-button > svg { flex-shrink:0; color:#657b98; }
-.loop-title-button > span { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-.loop-title-button:hover, .loop-title-button:hover > svg { color:var(--blue); }
-.loop-title-button:focus-visible { outline:2px solid var(--blue); outline-offset:4px; }
-.directory-title { position:relative; min-width:0; }
-.directory-tooltip { display:none; position:absolute; top:calc(100% + 10px); left:0; z-index:20; width:max-content; max-width:min(640px, calc(100vw - var(--sidebar-width) - 56px)); padding:9px 12px; border-radius:7px; background:#23344d; color:#fff; box-shadow:0 4px 16px #152d5126; font-size:13px; font-weight:400; line-height:1.6; white-space:normal; overflow-wrap:anywhere; pointer-events:none; }
-.directory-title:not(.tooltip-dismissed):hover .directory-tooltip, .directory-title:not(.tooltip-dismissed):has(.loop-title-button:focus-visible) .directory-tooltip { display:block; }
 .button-danger { color:#fff; background:#c44749; border:1px solid #c44749; }
 .button-danger:hover { background:#ad3639; }
 .empty-workspace { display:flex; align-items:center; justify-content:center; color:#7a899e; }
@@ -607,7 +598,6 @@ h1 { margin: 0; font-size: 23px; line-height: 1.35; font-weight: 700; letter-spa
 .new-loop-input-area { width:100%; max-width:840px; flex-shrink:0; }
 .new-loop-input-area .service-error { margin:0 0 14px; }
 .real-client .new-loop-composer { margin:0; }
-.composer-note { position:absolute; left:20px; bottom:25px; max-width:calc(100% - 100px); margin:0; }
 @media (max-width:1100px) {
   .new-loop-page { padding-inline:30px; }
   .new-loop-welcome h1 { font-size:24px; }
@@ -992,3 +982,6 @@ h1 { margin: 0; font-size: 23px; line-height: 1.35; font-weight: 700; letter-spa
 .workflow-path { overflow-wrap:anywhere; }
 
 .step-directory-tooltip { position:fixed; z-index:1000; width:max-content; max-width:min(480px, calc(100vw - 24px)); padding:9px 12px; border-radius:7px; background:#23344d; color:#fff; box-shadow:0 4px 16px #152d5126; font-size:13px; line-height:1.6; white-space:normal; overflow-wrap:anywhere; pointer-events:none; }
+
+.loop-load-error { padding: 12px 14px; color: #b42318; font-size: 13px; overflow-wrap: anywhere; }
+.loop-load-error p { margin: 0 0 6px; }

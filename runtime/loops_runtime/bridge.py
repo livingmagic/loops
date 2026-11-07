@@ -182,9 +182,9 @@ class Service:
                     models[key] = model
                 value = self.store.configure(loop_id, {**loop['config'], 'agentModels': models, 'agentReasoning': efforts})
         elif method == "agent_clients":
-            return await self.agent_clients.discover()
+            return await self.agent_clients.discover(ids=params.get("ids"))
         elif method == "agent_plugins":
-            return {"agents": await self.agent_clients.discover(refresh=True), "agentPluginErrors": PLUGIN_ERRORS}
+            return {"agents": await self.agent_clients.discover(refresh=params.get("refresh", True)), "agentPluginErrors": PLUGIN_ERRORS}
         elif method == "fixture":
             if params.get("kind") == "sales":
                 from .fixture import create_sales_fixture

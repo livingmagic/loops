@@ -11,8 +11,7 @@ export function subscribe(callback) {
   const source = new EventSource('/api/events');
   let connected = false;
   source.onopen = () => {
-    callback({ event: 'connected' });
-    if (connected) request('list').then((loops) => callback({ event: 'state', loops })).catch(() => {});
+    callback({ event: 'connected', reconnected: connected });
     connected = true;
   };
   source.onmessage = (event) => callback(JSON.parse(event.data));

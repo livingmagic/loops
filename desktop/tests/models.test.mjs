@@ -12,19 +12,23 @@ test('model settings persist defaults, keep secrets out of public state and reje
   const options = { dataDirectory: root, configDirectory: root, encryptSecret: key => { const id = `encrypted-${secrets.size}`; secrets.set(id, key); return id; }, decryptSecret: id => secrets.get(id) };
   try {
     const manager = new ModelSettings(options);
+    assert.deepEqual(manager.public().models, []);
+    assert.equal(manager.public().defaultModelId, null);
     const response = manager.save({ name: '工作模型', provider: 'compatible', model: 'my-model', baseUrl: 'https://example.com/v1', apiKey: 'test-only-secret' });
     const id = response.models.at(-1).id;
     assert.ok(!JSON.stringify(response).includes('test-only-secret'));
     assert.ok(!fs.readFileSync(manager.file, 'utf8').includes('test-only-secret'));
     assert.equal(fs.statSync(manager.file).mode & 0o777, 0o600);
-    manager.default(id);
+    assert.equal(response.defaultModelId, id);
     const restarted = new ModelSettings(options);
     assert.equal(restarted.config().model, 'my-model');
     assert.equal(restarted.config().key, 'test-only-secret');
     assert.throws(() => manager.remove(id), /默认/);
     assert.throws(() => manager.save({ id, name: '换地址', provider: 'compatible', model: 'my-model', baseUrl: 'https://other.example/v1' }), /API Key/);
     assert.throws(() => manager.save({ name: 'bad', provider: 'compatible', model: 'x', baseUrl: 'https://example.com/?key=secret', apiKey: 'x' }), /地址/);
-    manager.default('legacy'); manager.remove(id);
+    const other = manager.save({ name: '其他模型', provider: 'compatible', model: 'other-model', baseUrl: 'https://example.com/v1' });
+    assert.equal(other.defaultModelId, id);
+    manager.default(other.models.at(-1).id); manager.remove(id);
     assert.throws(() => manager.config(id), /移除/);
     assert.throws(() => new ModelSettings({ ...options, encryptSecret: undefined }).save({ name: 'x', provider: 'compatible', model: 'x', baseUrl: 'https://example.com/v1', apiKey: 'x' }), /安全存储/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
@@ -121,13 +125,42 @@ test('thinking controls expose supported levels and persist independently per mo
   try {
     const options = { dataDirectory: root, configDirectory: root, encryptSecret: () => 'cipher', decryptSecret: () => 'test-key' };
     const settings = new ModelSettings(options);
+    const flash = settings.save({ name: 'Flash', provider: 'deepseek', model: 'deepseek-flash', apiKey: 'test-key' }).models.at(-1);
     const pro = settings.save({ name: 'Pro', provider: 'deepseek', model: 'deepseek-v4-pro', apiKey: 'test-key' }).models.at(-1);
     assert.deepEqual(pro.thinkingLevels, ['off', 'high', 'max']);
     assert.deepEqual(settings.public().models[0].thinkingLevels, ['off', 'low', 'high', 'max']);
     settings.thinking(pro.id, 'max');
     assert.equal(new ModelSettings(options).config(pro.id).thinkingLevel, 'max');
-    assert.notEqual(settings.config('legacy').thinkingLevel, 'max');
+    assert.notEqual(settings.config(flash.id).thinkingLevel, 'max');
     assert.throws(() => settings.thinking(pro.id, 'low'), /不支持/);
     assert.equal(settings.config(pro.id).thinkingLevel, 'max');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('an old unconfigured placeholder does not override an existing configured model', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loops-placeholder-'));
+  try {
+    const manager = new ModelSettings({ dataDirectory: root });
+    manager.write({ version: 2, defaultId: 'legacy', credentials: { 'compatible:https://example.com/v1': 'cipher' }, models: [
+      { id: 'legacy', name: 'DeepSeek', provider: 'deepseek', model: 'deepseek-flash' },
+      { id: 'chosen', name: 'Chosen', provider: 'compatible', model: 'custom', baseUrl: 'https://example.com/v1' },
+    ] });
+    const state = manager.public();
+    assert.equal(state.defaultModelId, 'chosen');
+    assert.deepEqual(state.models.map(item => item.id), ['chosen']);
+    assert.equal(manager.read().defaultId, 'chosen');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('legacy entries edited to another provider survive placeholder cleanup', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loops-edited-legacy-'));
+  try {
+    const manager = new ModelSettings({ dataDirectory: root, decryptSecret: () => 'test-key' });
+    manager.write({ version: 2, defaultId: 'legacy', credentials: { 'compatible:https://example.com/v1': 'cipher' }, models: [
+      { id: 'legacy', name: 'Edited model', provider: 'compatible', model: 'custom', baseUrl: 'https://example.com/v1' },
+    ] });
+    assert.equal(manager.public().defaultModelId, 'legacy');
+    assert.equal(manager.config().model, 'custom');
+    assert.equal(manager.config().key, 'test-key');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

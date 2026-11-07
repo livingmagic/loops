@@ -6,21 +6,24 @@ import { request, subscribe } from './api.js';
 
 export const PluginContext = createContext({ plugins: [], selections: {}, setSelection: () => {}, refresh: async () => {}, loading: false, error: '' });
 
-export function PluginProvider({ children }) {
+export function PluginProvider({ children, warmup }) {
   const [store] = useState(() => createPluginStore(request));
   const [snapshot, setSnapshot] = useState(store.getSnapshot);
   const [selections, setSelections] = useState({});
   useEffect(() => {
     const offState = store.subscribe(setSnapshot);
-    void store.refresh();
-    const offEvents = subscribe(event => {
-      if (['connector_state', 'agent_plugins_changed'].includes(event.event)) void store.refresh({ invalidate: true });
-      if (event.event === 'connected') void store.refresh();
-    });
+    const offEvents = subscribe(store.handleEvent);
     return () => { offState(); offEvents(); };
   }, [store]);
+  useEffect(() => {
+    if (!warmup) return;
+    const idle = window.requestIdleCallback(() => {
+      void store.ensureLoaded();
+    }, { timeout: 1000 });
+    return () => window.cancelIdleCallback(idle);
+  }, [store, warmup]);
   const setSelection = (key, items) => setSelections(old => ({ ...old, [key]: items }));
-  return <PluginContext.Provider value={{ ...snapshot, selections, setSelection, refresh: store.refresh, setAgents: store.setAgents }}>{children}</PluginContext.Provider>;
+  return <PluginContext.Provider value={{ ...snapshot, selections, setSelection, ensureLoaded: store.ensureLoaded, refresh: store.refresh, refreshConnectors: store.refreshConnectors, refreshAgents: store.refreshAgents, setAgents: store.setAgents }}>{children}</PluginContext.Provider>;
 }
 
 export function MessagePlugins({ plugins }) {

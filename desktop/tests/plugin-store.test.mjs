@@ -1,24 +1,81 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPluginStore } from '../src/plugin-store.mjs';
-const response = method => method === 'agent_plugins' ? { agents: [{id:'codex'}] } : [{id:method}];
-test('startup loads page data and slash catalog together; subscribers reuse the same snapshot',async()=>{
- const calls=[];const store=createPluginStore(async method=>{calls.push(method);return response(method);});
- const first=store.refresh();assert.equal(store.refresh(),first);await first;
- assert.equal(calls.length,4);assert.equal(store.getSnapshot().loaded,true);
- let unsubscribe=store.subscribe(()=>{});unsubscribe();unsubscribe=store.subscribe(()=>{});
- assert.equal(calls.length,4);assert.equal(store.getSnapshot().agents[0].id,'codex');unsubscribe();
+const tick = () => new Promise(resolve => setImmediate(resolve));
+const response = method => ({
+  connector_list: [{ manifest: {id:'mcp',type:'mcp',name:'Example'}, enabled:true, status:'connected' }],
+  connector_presets: [],
+  agent_plugins: { agents: [{id:'codex',name:'Codex',ready:true}] },
+})[method];
+
+test('MCP becomes visible while Agent discovery is still pending', async () => {
+  let finishAgent;
+  const calls = [];
+  const store = createPluginStore(async method => {
+    calls.push(method);
+    if (method === 'agent_plugins') return new Promise(resolve => { finishAgent = resolve; });
+    return response(method);
+  });
+  const pending = store.ensureLoaded();
+  await tick();
+  assert.deepEqual(store.getSnapshot().plugins.map(p => p.id), ['mcp']);
+  assert.equal(store.getSnapshot().loading, true);
+  const reuse = store.ensureLoaded();
+  await tick();
+  assert.equal(calls.length, 3);
+  finishAgent(response('agent_plugins'));
+  await Promise.all([pending,reuse]);
+  assert.equal(store.getSnapshot().loaded, true);
+  assert.deepEqual(store.getSnapshot().plugins.map(p => p.id), ['mcp','codex']);
 });
-test('background refresh keeps loaded data and failures preserve last successful values',async()=>{
- let fail=false;const store=createPluginStore(async method=>{if(fail&&method==='connector_list')throw Error('offline');return response(method);});
- await store.refresh();const items=store.getSnapshot().items;fail=true;const pending=store.refresh();
- assert.equal(store.getSnapshot().loading,false);assert.equal(store.getSnapshot().items,items);await pending;
- assert.equal(store.getSnapshot().items,items);assert.equal(store.getSnapshot().pageError,'offline');
- fail=false;await store.refresh();assert.equal(store.getSnapshot().pageError,'');
+
+test('connector events only refresh connections; explicit Agent checks bypass the cache', async () => {
+  const calls = [];
+  const store = createPluginStore(async (method, params) => { calls.push({method,params}); return response(method); });
+  await store.ensureLoaded();
+  assert.deepEqual(calls.find(call => call.method === 'agent_plugins').params, {refresh:false});
+  calls.length = 0;
+  store.handleEvent({event:'connector_state'});
+  await tick();
+  assert.deepEqual(calls.map(call => call.method), ['connector_list']);
+  calls.length = 0;
+  store.handleEvent({event:'agent_plugins_changed'});
+  await tick();
+  assert.deepEqual(calls, [{method:'agent_plugins',params:{refresh:false}}]);
+  await store.refreshAgents({force:true});
+  assert.deepEqual(calls.at(-1), {method:'agent_plugins',params:{refresh:true}});
 });
-test('a state change during loading triggers one follow-up so stale data is not retained',async()=>{
- let release,calls=0;const gate=new Promise(resolve=>{release=resolve;});
- const store=createPluginStore(async method=>{calls++;await gate;return response(method);});
- const pending=store.refresh();store.refresh({invalidate:true});store.refresh({invalidate:true});release();await pending;
- assert.equal(calls,8);assert.equal(store.getSnapshot().loaded,true);
+
+test('failed refreshes keep successful data and a retry clears the error', async () => {
+  let fail = false;
+  const store = createPluginStore(async method => {
+    if (fail && method === 'connector_list') throw Error('offline');
+    return response(method);
+  });
+  await store.ensureLoaded();
+  const items = store.getSnapshot().items;
+  fail = true;
+  await store.refreshConnectors();
+  assert.equal(store.getSnapshot().items, items);
+  assert.match(store.getSnapshot().pageError, /offline/);
+  fail = false;
+  await store.refreshConnectors();
+  assert.equal(store.getSnapshot().pageError, '');
+});
+
+test('a failed preset read is retried without repeating a successful Agent probe', async () => {
+  let fail = true;
+  const calls = [];
+  const store = createPluginStore(async method => {
+    calls.push(method);
+    if (method === 'connector_presets' && fail) throw Error('presets unavailable');
+    return response(method);
+  });
+  await store.ensureLoaded();
+  assert.match(store.getSnapshot().pageError, /presets unavailable/);
+  fail = false;
+  calls.length = 0;
+  await store.refreshConnectors();
+  assert.deepEqual(calls, ['connector_list','connector_presets']);
+  assert.equal(store.getSnapshot().pageError, '');
 });
