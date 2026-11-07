@@ -22,17 +22,26 @@ function Publish({ loops, flows, enabled, initialId, act, onClose }) {
 
 function Options({ state, act, onClose }) {
   const [name, setName] = useState(state.config.name), [concurrency, setConcurrency] = useState(state.config.concurrency), [enabled, setEnabled] = useState(state.config.enabled);
+  const [disabledAddresses, setDisabledAddresses] = useState(state.config.disabledAddresses || []);
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [copied, setCopied] = useState('');
   return <SharingDialog title="共享设置" onClose={onClose}><form className="sharing-form" onSubmit={async event => {
     event.preventDefault(); setBusy(true);
-    try { await act('sharing_settings', { name, concurrency: Number(concurrency), enabled }); onClose(); }
+    try { await act('sharing_settings', { name, concurrency: Number(concurrency), enabled, disabledAddresses }); onClose(); }
     catch (e) { setError(e.message); } finally { setBusy(false); }
   }}>
     <label>本机名称<input required maxLength={80} value={name} onChange={event => setName(event.target.value)} /></label>
     <label>最大并发任务数<input type="number" min="1" max="32" required value={concurrency} onChange={event => setConcurrency(event.target.value)} /></label>
     <label className="sharing-toggle"><input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)} />允许外部连接</label>
     {!enabled && state.config.enabled && <p className="sharing-note">关闭后停止接受连接，已接受的任务继续执行。</p>}
-    {!!state.addresses.length && <div className="sharing-addresses"><span>连接地址</span>{state.addresses.map(address => <div key={address}><code>{address}</code><button className="icon-button" type="button" aria-label={`复制 ${address}`} onClick={async () => { try { await navigator.clipboard.writeText(address); setCopied(address); } catch { setError('复制失败，请手动复制地址。'); } }}>{copied === address ? <CheckCircle size={17} /> : <Copy size={17} />}</button></div>)}</div>}
+    <fieldset className="sharing-addresses"><legend>连接地址</legend>{(state.addressOptions || []).map(item => {
+      const checked = !disabledAddresses.includes(item.ip);
+      return <div className={`sharing-address-row ${checked ? '' : 'disabled'}`} key={item.ip}>
+        <label><input type="checkbox" aria-label={`允许通过 ${item.ip} 连接`} checked={checked} onChange={event => setDisabledAddresses(previous => event.target.checked ? previous.filter(ip => ip !== item.ip) : [...previous, item.ip])} />
+          <span><code>{item.url || item.ip}</code><small>{[item.source, item.interface, item.active === false ? '未连接' : ''].filter(Boolean).join(' · ')}</small></span>
+        </label>
+        <button className="icon-button" type="button" disabled={!checked || !item.url || !enabled} aria-label={`复制 ${item.url || item.ip}`} onClick={async () => { try { await navigator.clipboard.writeText(item.url); setCopied(item.ip); } catch { setError('复制失败，请手动复制地址。'); } }}>{copied === item.ip ? <CheckCircle size={17} /> : <Copy size={17} />}</button>
+      </div>;
+    })}</fieldset>
     {error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>取消</button><button className="button button-primary" disabled={busy}>保存</button></div>
   </form></SharingDialog>;
 }
