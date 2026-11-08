@@ -17,28 +17,54 @@ GROUP, DISCOVERY_PORT = '239.255.76.80', 45871
 MAX_BODY = 15 * 1024 * 1024
 
 
-def local_addresses():
-    """Read assigned IPv4 addresses without DNS or network round trips."""
-    addresses = {'127.0.0.1'}
+def local_interfaces():
+    """Read address sources from local interfaces, without DNS or network round trips."""
+    addresses = {'127.0.0.1': {'ip': '127.0.0.1', 'interface': '', 'source': '本机', 'active': True}}
     # SIOCGIFADDR from Darwin sys/sockio.h and Linux linux/sockios.h.
     operation = {'darwin': 0xc0206921, 'linux': 0x8915}.get(sys.platform)
     if operation is None:
-        return addresses
+        return list(addresses.values())
     import fcntl
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             for _, name in socket.if_nameindex():
+                query = struct.pack('256s', name.encode())
                 try:
-                    result = fcntl.ioctl(sock.fileno(), operation, struct.pack('256s', name.encode()))
+                    result = fcntl.ioctl(sock.fileno(), operation, query)
                     # ifreq starts with a 16-byte name, then sockaddr_in.sin_addr at offset 4.
                     address = socket.inet_ntoa(result[20:24])
-                    if address != '0.0.0.0':
-                        addresses.add(address)
                 except OSError:  # Interfaces without an IPv4 address are expected.
                     continue
+                if address == '0.0.0.0':
+                    continue
+                def read(operation, offset=16, fmt='I'):
+                    try:
+                        return struct.unpack_from(fmt, fcntl.ioctl(sock.fileno(), operation, query), offset)[0]
+                    except OSError:
+                        return None
+                flags = read(0xc0206911 if sys.platform == 'darwin' else 0x8913, fmt='H')
+                functional = read(0xc02069ad) if sys.platform == 'darwin' else None
+                source = {2: '以太网', 3: 'Wi-Fi', 4: '点对点 Wi-Fi', 5: '蜂窝网络'}.get(functional, '网络接口')
+                if flags is not None and flags & 0x8:
+                    source = '本机'
+                elif flags is not None and flags & 0x10:
+                    source = '隧道接口'
+                elif sys.platform == 'darwin' and name.startswith('bridge'):
+                    source = '网桥'
+                active = bool(flags & 1) if flags is not None else None
+                if sys.platform == 'darwin':
+                    # Darwin's packed ifmediareq is 44 bytes; IFM_AVALID / IFM_ACTIVE.
+                    media = read(0xc02c6938, offset=24)
+                    if media is not None and media & 1:
+                        active = bool(media & 2)
+                addresses[address] = {'ip': address, 'interface': name, 'source': source, 'active': active}
     except OSError:
         pass
-    return addresses
+    return sorted(addresses.values(), key=lambda item: (item['source'] != '本机', item['active'] is False, item['ip']))
+
+
+def local_addresses():
+    return {item['ip'] for item in local_interfaces()}
 
 
 def certificate(directory, name):
@@ -115,8 +141,9 @@ def request(address, method, params=None, *, token=None, fingerprint=None, downl
 
 
 class Discovery(asyncio.DatagramProtocol):
-    def __init__(self, identity):
+    def __init__(self, identity, addresses):
         self.identity = identity
+        self.addresses = addresses
         self.transport = None
 
     def connection_made(self, transport):
@@ -124,6 +151,14 @@ class Discovery(asyncio.DatagramProtocol):
 
     def datagram_received(self, data, address):
         if data == b'LOOPS_DISCOVER_V1':
+            # Only advertise an address that the service actually accepts connections on.
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                    probe.connect(address)
+                    if probe.getsockname()[0] not in self.addresses():
+                        return
+            except OSError:
+                return
             self.transport.sendto(json.dumps(self.identity()).encode(), address)
 
     async def start(self):

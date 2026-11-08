@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import secrets
@@ -12,7 +13,7 @@ import tempfile
 from pathlib import Path
 
 from .definition import declared_outputs
-from .sharing_network import Discovery, MAX_BODY, certificate, discover, local_addresses, pairing_code, request
+from .sharing_network import Discovery, MAX_BODY, certificate, discover, local_addresses, local_interfaces, pairing_code, request
 from .store import ACTIVE, now, uid
 from .workflow import create_run
 
@@ -25,8 +26,10 @@ class Sharing:
         store.db.execute('CREATE TABLE IF NOT EXISTS sharing (kind TEXT, id TEXT, data TEXT NOT NULL, PRIMARY KEY(kind,id))')
         store.db.commit()
         self.config = self.get('config', 'local') or {'id': uid('host'), 'name': socket.gethostname().split('.')[0], 'enabled': False, 'concurrency': 2, 'port': 0}
+        self.config.setdefault('disabledAddresses', [])
         self.put('config', 'local', self.config)
         self.server = self.server_task = self.discovery = self.worker = None
+        self.listening_addresses = set()
         self.start_lock = asyncio.Lock()
         self.connect_lock = asyncio.Lock()
         self.wakeup = asyncio.Event()
@@ -65,43 +68,57 @@ class Sharing:
             return
         if not self.worker:
             self.worker = asyncio.create_task(self.dispatch())
-        if not self.config['enabled'] or self.server_task:
+        if not self.config['enabled']:
             return
         async with self.start_lock:
-            if self.server_task or self.closing:
+            if self.closing:
                 return
+            addresses = local_addresses() - set(self.config['disabledAddresses'])
+            if self.server_task and not self.server_task.done() and addresses == self.listening_addresses:
+                return
+            await self.stop_server()
+            if not addresses:
+                self.error = '没有可用的连接地址，请在共享设置中启用至少一个地址。'
+                raise ValueError(self.error)
             try:
-                await self.listen()
                 self.error = ''
+                await self.listen(addresses)
             except Exception:
                 self.error = '共享服务启动失败，请检查端口占用后重新开启共享。'
                 raise ValueError(self.error) from None
 
-    async def listen(self):
+    async def listen(self, addresses):
         import uvicorn
         from starlette.applications import Starlette
         from starlette.routing import Route
         cert, key, self.fingerprint = certificate(self.directory, self.config['id'])
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sockets = []
         try:
-            sock.bind(('0.0.0.0', self.config['port']))
-            sock.listen(128)
-            self.config['port'] = sock.getsockname()[1]
+            port = self.config['port']
+            for address in sorted(addresses):
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sockets.append(sock)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind((address, port))
+                sock.listen(128)
+                port = sock.getsockname()[1]
+            self.config['port'] = port
             self.put('config', 'local', self.config)
             app = Starlette(routes=[Route('/v1/action', self.http_action, methods=['POST']), Route('/v1/files/{task_id}/{index:int}', self.http_file)])
             self.server = uvicorn.Server(uvicorn.Config(app, log_config=None, log_level='critical', access_log=False, lifespan='off', ssl_certfile=str(cert), ssl_keyfile=str(key), timeout_graceful_shutdown=2))
-            self.server_task = asyncio.create_task(self.server.serve(sockets=[sock]))
+            self.server_task = asyncio.create_task(self.server.serve(sockets=sockets))
             while not self.server.started:
                 if self.server_task.done():
                     await self.server_task
                     raise ValueError('共享监听未启动。')
                 await asyncio.sleep(0.01)
         except BaseException:
-            sock.close()
+            for sock in sockets:
+                sock.close()
             self.server_task = None
             raise
-        self.discovery = Discovery(self.identity)
+        self.listening_addresses = addresses
+        self.discovery = Discovery(self.identity, lambda: self.listening_addresses)
         try:
             await self.discovery.start()
         except OSError:
@@ -115,6 +132,13 @@ class Sharing:
             self.server.should_exit = True
             await self.server_task
             self.server_task = None
+        self.listening_addresses = set()
+
+    def check_address(self, http):
+        # Use the transport destination, never the caller-controlled Host / forwarded headers.
+        address = http.scope.get('server', (None, None))[0]
+        if not self.config['enabled'] or address not in self.listening_addresses or address in self.config['disabledAddresses']:
+            raise PermissionError('此地址已停止接受共享连接。')
 
     def authenticate(self, authorization):
         if not self.config['enabled']:
@@ -129,6 +153,7 @@ class Sharing:
     async def http_action(self, http):
         from starlette.responses import JSONResponse
         try:
+            self.check_address(http)
             if http.headers.get('origin'):
                 raise PermissionError('请使用 Loops 客户端或已授权的命令行连接。')
             body = bytearray()
@@ -169,6 +194,7 @@ class Sharing:
     async def http_file(self, http):
         from starlette.responses import FileResponse, JSONResponse
         try:
+            self.check_address(http)
             client = self.authenticate(http.headers.get('authorization', ''))
             job = self.owned_task(http.path_params['task_id'], client)
             files = self.result(job)['files']
@@ -389,9 +415,11 @@ class Sharing:
         clients = self.rows('client')
         for client in clients:
             self.expire_client(client)
-        addresses = local_addresses()
+        interfaces = local_interfaces()
+        port = self.config['port']
+        options = [{**item, 'url': f'https://{item["ip"]}:{port}' if port else None, 'enabled': item['ip'] not in self.config['disabledAddresses']} for item in interfaces]
         return {'config': self.config, 'online': bool(self.server and self.server.started and self.server_task and not self.server_task.done()), 'error': self.error,
-                'addresses': [f'https://{host}:{self.config["port"]}' for host in sorted(addresses)] if self.config['port'] else [],
+                'addresses': [item['url'] for item in options if item['url'] and item['enabled']], 'addressOptions': options,
                 'pastFlows': list({job['loopId']: {'id': job['loopId'], 'name': job['name'], 'revision': job['revision']} for job in self.rows('task')}.values()),
                 'managedFlows': self.catalog(include_stopped=True), 'flows': self.catalog(), 'clients': [{k: v for k, v in c.items() if k != 'requested'} for c in clients],
                 'peers': self.peers(), 'tasks': [{**self.result(j), 'clientName': j['clientName'], 'clientNote': self.task_client_note(j), 'runId': j['runId']} for j in self.rows('task')[-100:]][::-1]}
@@ -449,7 +477,17 @@ class Sharing:
             name = params.get('name', self.config['name'])
             if type(concurrency) is not int or not 1 <= concurrency <= 32 or not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
                 raise ValueError('请填写名称，并设置 1 到 32 的并发数。')
-            self.config.update(name=name.strip(), concurrency=concurrency, enabled=params.get('enabled', self.config['enabled']) is True)
+            disabled = params.get('disabledAddresses', self.config['disabledAddresses'])
+            if not isinstance(disabled, list) or len(disabled) > 256 or any(not isinstance(item, str) for item in disabled):
+                raise ValueError('连接地址设置无效。')
+            try:
+                disabled = sorted({str(ipaddress.IPv4Address(item)) for item in disabled})
+            except ValueError:
+                raise ValueError('连接地址设置无效。') from None
+            enabled = params.get('enabled', self.config['enabled']) is True
+            if enabled and not local_addresses() - set(disabled):
+                raise ValueError('请至少启用一个连接地址，或关闭外部连接。')
+            self.config.update(name=name.strip(), concurrency=concurrency, enabled=enabled, disabledAddresses=disabled)
             self.put('config', 'local', self.config)
             if self.config['enabled']:
                 await self.startup()
@@ -458,6 +496,8 @@ class Sharing:
         elif method == 'sharing_publish':
             loop = self.store.get(params['loopId'])
             snapshot = self.store.version(loop['id'], params.get('revision', loop['savedRevision']))
+            if params.get('enableSharing') is True and not local_addresses() - set(self.config['disabledAddresses']):
+                raise ValueError('请先在共享设置中启用至少一个连接地址。')
             self.put('publication', loop['id'], {'id': loop['id'], 'name': snapshot['title'], 'revision': snapshot['revision'], 'enabled': True})
             if params.get('enableSharing') is True:
                 self.config['enabled'] = True

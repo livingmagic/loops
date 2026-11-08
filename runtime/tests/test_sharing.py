@@ -10,9 +10,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlsplit
+from types import SimpleNamespace
 
 from loops_runtime.bridge import Service
-from loops_runtime.sharing_network import request
+from loops_runtime.sharing_network import local_interfaces, request
 
 
 def definition(delay=0, kind='text'):
@@ -113,6 +114,59 @@ class SharingTests(unittest.IsolatedAsyncioTestCase):
                 probe.bind((urlsplit(address).hostname, 0))
         with patch('socket.if_nameindex', side_effect=OSError('Interfaces unavailable')):
             self.assertEqual((await self.host.handle('sharing_state', {}))['addresses'], [self.address])
+
+    async def test_disabled_address_blocks_access_preserves_jobs_and_survives_restart(self):
+        other = next((item['ip'] for item in local_interfaces() if item['source'] != '本机' and item['active']), None)
+        if not other:
+            self.skipTest('A second assigned IPv4 address is required for the real two-address test.')
+        loop = await self.build(delay=.3)
+        peer, _ = await self.connect()
+        job = await self.submit(peer, loop)
+        alternate = {**peer, 'address': f"https://{other}:{self.host.sharing.config['port']}"}
+        state = await self.host.handle('sharing_settings', {'disabledAddresses': ['127.0.0.1']})
+        self.assertNotIn(self.address, state['addresses'])
+        self.assertFalse(next(item for item in state['addressOptions'] if item['ip'] == '127.0.0.1')['enabled'])
+        with self.assertRaises(OSError):
+            await asyncio.to_thread(request, self.address, 'identity')
+        result = await self.finish(alternate, job)
+        self.assertEqual(result['status'], 'success')
+        self.assertEqual((await self.client.sharing.remote(alternate, 'flows'))['flows'][0]['id'], loop['id'])
+        await self.client.sharing.remote(alternate, 'file', {'taskId': job['id'], 'index': 0}, download=self.root / 'allowed-result.json')
+        self.assertEqual(json.loads((self.root / 'allowed-result.json').read_text())['text'], 'HELLO')
+        # A retained request cannot bypass the destination policy with another Host header.
+        with self.assertRaises(PermissionError):
+            self.host.sharing.check_address(SimpleNamespace(scope={'server': ('127.0.0.1', 443)}, headers={'host': other}))
+        with self.assertRaises(ValueError):
+            await self.client.sharing.remote(alternate, 'sharing_settings', {'disabledAddresses': []})
+        await self.host.handle('shutdown', {})
+        self.host.store.db.close()
+        self.host = Service(self.root / 'host', self.events.append)
+        await self.host.handle('list', {})
+        self.assertEqual(self.host.sharing.config['disabledAddresses'], ['127.0.0.1'])
+        with self.assertRaises(OSError):
+            await asyncio.to_thread(request, self.address, 'identity')
+        self.assertEqual((await self.client.sharing.remote(alternate, 'task', {'taskId': job['id']}))['status'], 'success')
+        restored = await self.host.handle('sharing_settings', {'disabledAddresses': []})
+        self.assertIn(self.address, restored['addresses'])
+        self.assertEqual((await self.client.sharing.remote(peer, 'flows'))['flows'][0]['id'], loop['id'])
+
+    async def test_address_selection_validation_and_disabled_service(self):
+        initial = self.host.sharing.state()
+        addresses = [item['ip'] for item in initial['addressOptions']]
+        for invalid in ('127.0.0.1', [None], ['not-an-ip'], ['::1']):
+            with self.assertRaisesRegex(ValueError, '连接地址'):
+                await self.host.handle('sharing_settings', {'disabledAddresses': invalid})
+        with self.assertRaisesRegex(ValueError, '至少启用一个'):
+            await self.host.handle('sharing_settings', {'disabledAddresses': addresses})
+        self.assertEqual(self.host.sharing.config['disabledAddresses'], [])
+        stopped = await self.host.handle('sharing_settings', {'enabled': False, 'disabledAddresses': addresses})
+        self.assertFalse(stopped['online'])
+        with self.assertRaisesRegex(ValueError, '至少启用一个'):
+            await self.host.handle('sharing_settings', {'enabled': True})
+        self.assertFalse(self.host.sharing.config['enabled'])
+        local_only = await self.host.handle('sharing_settings', {'enabled': True, 'disabledAddresses': [ip for ip in addresses if ip != '127.0.0.1']})
+        self.assertEqual(local_only['addresses'], [self.address])
+        self.assertEqual(self.host.sharing.listening_addresses, {'127.0.0.1'})
 
     async def test_local_history_detail_and_file_stay_in_sharing(self):
         loop = await self.build()
