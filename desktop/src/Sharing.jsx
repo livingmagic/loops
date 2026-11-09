@@ -1,8 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useContext, useEffect, useState } from 'react';
 import { CheckCircle, Copy, Gear, FlowArrow, Globe, Plus, SpinnerGap, Users } from '@phosphor-icons/react';
 import { request, subscribe } from './api.js';
 import { SharingDialog } from './SharingDialog.jsx';
 import { SharingRecords } from './SharingRecords.jsx';
+import { PluginContext } from './PluginContext.jsx';
+import { ConnectSharedClient, SharedClientCard, SharedClientDetails, useSharedClients } from './SharedClients.jsx';
+
+const sharingTabs = [['flows', '流程'], ['access', '访问授权'], ['connections', '客户端连接']];
 
 function Publish({ loops, flows, enabled, initialId, act, onClose }) {
   const available = loops.filter(loop => loop.savedRevision && !flows.some(flow => flow.id === loop.id && flow.revision === loop.savedRevision));
@@ -33,7 +37,8 @@ function Options({ state, act, onClose }) {
     <label>最大并发任务数<input type="number" min="1" max="32" required value={concurrency} onChange={event => setConcurrency(event.target.value)} /></label>
     <label className="sharing-toggle"><input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)} />允许外部连接</label>
     {!enabled && state.config.enabled && <p className="sharing-note">关闭后停止接受连接，已接受的任务继续执行。</p>}
-    <fieldset className="sharing-addresses"><legend>连接地址</legend>{(state.addressOptions || []).map(item => {
+    <fieldset className="sharing-addresses"><legend>连接地址</legend>
+      {!state.config.port && <p className="sharing-note">开启外部连接并保存后，将生成包含端口的完整地址。</p>}{(state.addressOptions || []).map(item => {
       const checked = !disabledAddresses.includes(item.ip);
       return <div className={`sharing-address-row ${checked ? '' : 'disabled'}`} key={item.ip}>
         <label><input type="checkbox" aria-label={`允许通过 ${item.ip} 连接`} checked={checked} onChange={event => setDisabledAddresses(previous => event.target.checked ? previous.filter(ip => ip !== item.ip) : [...previous, item.ip])} />
@@ -65,6 +70,11 @@ function ClientNote({ client, act, onClose }) {
 }
 
 export function Sharing({ loops }) {
+  const { items, refreshConnectors } = useContext(PluginContext);
+  const shared = useSharedClients(items, refreshConnectors);
+  const [selectedPeer, setSelectedPeer] = useState(null);
+  const peer = shared.peers.find(item => item.id === selectedPeer);
+  useEffect(() => { void refreshConnectors(); }, [refreshConnectors]);
   const [state, setState] = useState(null);
   const [tab, setTab] = useState('flows');
   const [selectedFlow, setSelectedFlow] = useState(null);
@@ -109,29 +119,30 @@ export function Sharing({ loops }) {
   }
   const flow = flows.find(item => item.id === selectedFlow) || flows[0];
   const latest = loops.find(item => item.id === flow?.id)?.savedRevision;
-  const showPublish = state && (flows.length > 0 || tab !== 'flows');
+  const showPublish = state && tab !== 'connections' && (flows.length > 0 || tab !== 'flows');
 
   return <main className="workspace sharing-workspace">
     <header className="topbar sharing-topbar">
-      <div className="sharing-heading"><h1>共享</h1>{state && <span className={`sharing-availability ${state.online ? 'online' : ''}`}><i />{state.online ? '已开启' : '未开启'}</span>}</div>
+      <div className="sharing-heading"><h1>共享</h1>{state && tab !== 'connections' && <span className={`sharing-availability ${state.online ? 'online' : ''}`}><i />{state.online ? '已开启' : '未开启'}</span>}</div>
       <div className="toolbar-actions">
-        <button className="button button-secondary" disabled={!state} onClick={() => setModal('settings')}><Gear size={17} />共享设置</button>
+        {tab !== 'connections' && <button className="button button-secondary" disabled={!state} onClick={() => setModal('settings')}><Gear size={17} />共享设置</button>}
+        {tab === 'connections' && shared.peers.length > 0 && <button className="button button-primary" onClick={() => setModal('connect')}><Plus size={18} />连接 Loops 客户端</button>}
         {showPublish && <button className="button button-primary" onClick={() => setModal('publish')}><Plus size={18} />发布流程</button>}
       </div>
     </header>
     <div className="sharing-tabs" role="tablist" aria-label="共享管理">
-      {[['flows', '流程'], ['access', '访问授权']].map(([id, label]) => <button key={id} id={`sharing-tab-${id}`} role="tab" aria-selected={tab === id} aria-controls="sharing-panel" tabIndex={tab === id ? 0 : -1} onClick={() => setTab(id)} onKeyDown={event => {
-        const ids = ['flows', 'access'];
+      {sharingTabs.map(([id, label]) => <button key={id} id={`sharing-tab-${id}`} role="tab" aria-selected={tab === id} aria-controls="sharing-panel" tabIndex={tab === id ? 0 : -1} onClick={() => setTab(id)} onKeyDown={event => {
+        const ids = sharingTabs.map(([id]) => id);
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault();
-        const next = event.key === 'Home' ? 'flows' : event.key === 'End' ? 'access' : ids[(ids.indexOf(id) + 1) % 2];
+        const next = event.key === 'Home' ? ids[0] : event.key === 'End' ? ids.at(-1) : ids[(ids.indexOf(id) + (event.key === 'ArrowRight' ? 1 : -1) + ids.length) % ids.length];
         setTab(next); document.getElementById(`sharing-tab-${next}`)?.focus();
       }}>{label}{id === 'access' && pending.length > 0 && <span className="sharing-tab-count">{pending.length}</span>}</button>)}
     </div>
     <div className="sharing-body" id="sharing-panel" role="tabpanel" aria-labelledby={`sharing-tab-${tab}`}>
       <div className={`sharing-content ${tab === 'flows' && flows.length ? 'sharing-split-content' : ''}`}>
         {(error || state?.error) && <p className="form-error" role="alert">{error || state.error}</p>}
-        {state && !state.online && flows.length > 0 && <div className="sharing-service-notice"><span>共享未开启，已发布流程暂不可调用。</span><button className="button button-secondary" disabled={working} onClick={() => perform('sharing_settings', { enabled: true })}>开启共享</button></div>}
+        {state && tab !== 'connections' && !state.online && flows.length > 0 && <div className="sharing-service-notice"><span>共享未开启，已发布流程暂不可调用。</span><button className="button button-secondary" disabled={working} onClick={() => perform('sharing_settings', { enabled: true })}>开启共享</button></div>}
         {!state && <p className="sharing-loading"><SpinnerGap className="spinning" size={18} />正在读取…</p>}
         {state && tab === 'flows' && (flows.length ? <div className="sharing-split">
           <nav className="sharing-flow-list" aria-label="共享流程">
@@ -151,6 +162,13 @@ export function Sharing({ loops }) {
           <p>已授权的客户端可以发现并调用。</p>
           <button className="button button-primary" onClick={() => setModal('publish')}><Plus size={18} />发布流程</button>
         </div>)}
+        {state && tab === 'connections' && <>
+          {shared.error && <p className="form-error" role="alert">{shared.error}</p>}
+          {shared.peers.length ? <div>{shared.peers.map(peer => <SharedClientCard key={peer.id} peer={peer} plugin={items.find(item => item.manifest.id === `shared-${peer.id}`)} onOpen={() => setSelectedPeer(peer.id)} />)}</div> : <div className="sharing-empty-state">
+            <span className="sharing-empty-icon"><Globe size={30} /></span><h2>连接其他 Loops 客户端</h2><p>使用对方共享的流程。</p>
+            <button className="button button-primary" onClick={() => setModal('connect')}><Plus size={18} />连接 Loops 客户端</button>
+          </div>}
+        </>}
         {state && tab === 'access' && <>
           {!!pending.length && <section className="sharing-access-section">
             <h2>待确认</h2>
@@ -179,6 +197,13 @@ export function Sharing({ loops }) {
         </>}
       </div>
     </div>
+    {modal === 'connect' && <ConnectSharedClient onClose={() => setModal(null)} act={async (method, params) => {
+      const next = await shared.act(method, params);
+      const added = next.peers.find(item => !shared.peers.some(previous => previous.id === item.id));
+      if (next.connectedPeerId || added) setSelectedPeer(next.connectedPeerId || added.id);
+      return next;
+    }} />}
+    {peer && <SharedClientDetails peer={peer} plugin={items.find(item => item.manifest.id === `shared-${peer.id}`)} act={shared.act} refreshPlugins={refreshConnectors} onClose={() => setSelectedPeer(null)} />}
     {(modal === 'publish' || modal?.type === 'publish') && <Publish loops={loops} flows={state.flows} enabled={state.config.enabled} initialId={modal?.flowId} act={act} onClose={() => setModal(null)} />}
     {modal?.type === 'note' && <ClientNote client={modal.client} act={act} onClose={() => setModal(null)} />}
     {modal === 'settings' && <Options state={state} act={act} onClose={() => setModal(null)} />}

@@ -6,6 +6,7 @@ import secrets
 import time
 import sys
 import socket
+import ssl
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -426,10 +427,22 @@ class SharingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(retry['status'], 'pending')
         self.assertEqual(len(self.host.sharing.rows('client')), 1)
 
+    def test_transport_errors_have_actionable_messages(self):
+        for error, message in (
+            (ConnectionRefusedError(61, 'Connection refused'), '无法连接对方 Loops'),
+            (TimeoutError('timed out'), '连接超时'),
+            (socket.gaierror('host not found'), '无法连接对方 Loops'),
+            (ssl.SSLError('wrong version number'), '无法建立安全连接'),
+        ):
+            with self.subTest(error=type(error).__name__):
+                with patch('http.client.HTTPSConnection.connect', side_effect=error):
+                    with self.assertRaisesRegex(ConnectionError, message):
+                        request(self.address, 'identity')
+
     async def test_offline_refresh_keeps_authorization_and_recovers(self):
         peer, _ = await self.connect()
         await self.host.handle('sharing_settings', {'enabled': False})
-        with self.assertRaises(Exception):
+        with self.assertRaisesRegex(ConnectionError, '无法连接对方 Loops'):
             await self.client.handle('sharing_refresh_peer', {'peerId': peer['id']})
         current = self.client.sharing.peer(peer['id'])
         self.assertFalse(current['online'])

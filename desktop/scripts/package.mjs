@@ -52,6 +52,7 @@ await fs.copyFile(path.join(root, 'node_modules/electron/dist/LICENSES.chromium.
 const included = ['dist', 'electron', 'host', 'prompts', 'public', 'assets', 'node_modules', 'package.json', 'package-lock.json'];
 const outputs = await packager({ dir: root, name: 'Loops', appBundleId: 'com.loops.desktop', platform: 'darwin', arch: process.arch,
   icon: path.join(root, 'assets/loops.icns'),
+  extendInfo: { NSLocalNetworkUsageDescription: '用于发现和连接局域网中的 Loops 客户端，使用经你授权的共享流程。' },
   out: path.resolve(root, process.env.LOOPS_PACKAGE_OUT || 'out'), overwrite: true, prune: true, asar: false, extraResource: [target, legal],
   ignore: (filename) => Boolean(filename) && !included.some((name) => filename === `/${name}` || filename.startsWith(`/${name}/`)),
 });

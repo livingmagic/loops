@@ -36,7 +36,7 @@ test('pending or revoked authorization cannot register a shared plugin', async (
   for (const status of ['pending', 'revoked']) {
     const { host, calls } = hostFixture({ status });
     await assert.rejects(host.action('sharing_add_plugin', { peerId: 'peer-one' }), /同意连接/);
-    assert.deepEqual(calls, ['sharing_refresh_peer']);
+    assert.deepEqual(calls, ['connector_list', 'sharing_refresh_peer']);
     assert.equal(host.sharedPluginJobs.size, 0);
   }
 });
@@ -45,6 +45,7 @@ test('reopening plugins preserves a shared plugin the user disabled', async () =
   const existing = { manifest: { id: 'shared-peer-one' }, enabled: false, revision: 5 };
   const { host, calls } = hostFixture({ existing });
   assert.deepEqual(await host.action('sharing_add_plugin', { peerId: 'peer-one' }), existing);
+  assert.ok(!calls.includes('sharing_refresh_peer'));
   assert.ok(!calls.includes('connector_connect'));
   assert.ok(!calls.includes('connector_save'));
 });
