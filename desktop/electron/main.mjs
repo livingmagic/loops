@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Host } from '../host/service.mjs';
 import { clientDataPaths } from '../host/data-paths.mjs';
+import { openInFinder } from './finder.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 app.setName('Loops');
@@ -62,6 +63,10 @@ if (host) {
     if (!['directory', 'file'].includes(kind)) throw new Error('无效的文件选择。');
     const result = await dialog.showOpenDialog(window, { properties: kind === 'directory' ? ['openDirectory'] : ['openFile'] });
     return result.canceled ? null : result.filePaths[0];
+  });
+  ipcMain.handle('loops:open-in-finder', (event, filename) => {
+    trusted(event);
+    return openInFinder(filename, shell);
   });
   ipcMain.handle('loops:url', (event, url) => { trusted(event); if (!/^https:\/\/github\.com\//.test(url)) throw new Error('只能打开交付记录中的 GitHub 地址。'); return shell.openExternal(url); });
   host.on('event', (event) => {

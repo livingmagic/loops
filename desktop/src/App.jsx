@@ -11,6 +11,8 @@ import { ModelContext } from './ModelContext.jsx';
 import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { ArrowUpRight, ArrowCounterClockwise, CaretDown, CaretRight, CheckCircle, Circle, DotsThree, FileText, FloppyDisk, Globe, Gear, GitPullRequest, Link, Play, Plus, SpinnerGap, Stop, Trash, User, WarningCircle, X } from '@phosphor-icons/react';
 import { native, request, subscribe } from './api.js';
+import { PathLink } from './PathLink.jsx';
+import { isLocalPath } from './path-display.js';
 import { workflowOutputs } from './workflow-outputs.js';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -129,11 +131,11 @@ function StepDetail({ loop, step, home, selectedRun, onDirectoryChange, onScript
     if (!agentsLoaded && ['agent', 'codex'].includes(execution.tool)) void refreshAgents();
   }, [execution.tool, agentsLoaded, refreshAgents]);
   const paths = workflowPaths(loop, selectedRun);
-  const show = (value, file = false) => { const full = paths.resolve(value, file); return <span className="workflow-path" title={shortPathText(full, home)}>{shortPathText(full, home)}</span>; };
+  const show = (value, file = false, link = file, levels = 1) => { const full = paths.resolve(value, file); if (link && (file || isLocalPath(full))) return <PathLink path={full} home={home} levels={levels} />; return <span className="workflow-path" title={shortPathText(full, home)}>{shortPathText(full, home)}</span>; };
   const commandText = values => show(values.map(value => paths.resolve(value)).join(' '));
   const failure = step.onFailure;
   const executionDetails = <>
-    <section><h3>执行方式</h3>{['agent', 'codex'].includes(execution.tool) && <StepAgentSettings execution={execution} config={loop.config} clients={agentsLoaded ? agents : null} disabled={disabled} onChange={onAgentChange} />}{!['agent', 'codex'].includes(execution.tool) && <p>{toolLabels[execution.tool]}{execution.tool === 'mcp' && ` · ${execution.connectorId} / ${execution.operation}`}</p>}{execution.command && <pre>{commandText(execution.command)}</pre>}{execution.script && <><button className="script-link" onClick={() => onScript(execution.script)}>查看脚本 · {show(`${paths.bundle}/${execution.script}`)}<ArrowUpRight size={13} /></button>{!!execution.args?.length && <pre>参数：{commandText(execution.args)}</pre>}</>}{['agent', 'codex'].includes(execution.tool) ? <StepDirectory key={step.id} home={home} defaultPath={paths.workspace} displayValue={paths.resolve(execution.cwd || '${workspace}', true)} value={execution.cwd || ''} disabled={disabled} onChange={onDirectoryChange} /> : execution.tool !== 'mcp' && <p>工作目录：{show(execution.cwd || '${workspace}', true)}</p>}</section>
+    <section><h3>执行方式</h3>{['agent', 'codex'].includes(execution.tool) && <StepAgentSettings execution={execution} config={loop.config} clients={agentsLoaded ? agents : null} disabled={disabled} onChange={onAgentChange} />}{!['agent', 'codex'].includes(execution.tool) && <p>{toolLabels[execution.tool]}{execution.tool === 'mcp' && ` · ${execution.connectorId} / ${execution.operation}`}</p>}{execution.command && <pre>{commandText(execution.command)}</pre>}{execution.script && <><button className="script-link" onClick={() => onScript(execution.script)}>查看脚本 · {show(`${paths.bundle}/${execution.script}`)}<ArrowUpRight size={13} /></button>{!!execution.args?.length && <pre>参数：{commandText(execution.args)}</pre>}</>}{['agent', 'codex'].includes(execution.tool) ? <StepDirectory key={step.id} home={home} defaultPath={paths.workspace} displayValue={paths.resolve(execution.cwd || '${workspace}', true)} value={execution.cwd || ''} disabled={disabled} onChange={onDirectoryChange} /> : execution.tool !== 'mcp' && <p>工作目录：{show(execution.cwd || '${workspace}', true, true, 2)}</p>}</section>
     {execution.tool === 'command' && <section><h3>运行控制</h3><p>每次调用最多 {execution.timeoutSeconds ?? 180} 秒；{execution.effect === 'read' ? '只读，可按失败策略重试。' : '可能写入，发起后不自动重复执行。'}</p></section>}{execution.forEach && <section><h3>逐项处理</h3><p>{show(execution.forEach)}</p><p>按列表顺序执行；没有项目时跳过调用，继续后续步骤。</p></section>}
     {!!step.checks?.length && <section><h3>完成条件</h3>{step.checks.map((check, index) => <div key={index}>{check.kind === 'command' ? <><p>{check.label || '命令检查'} · 退出码 {check.expectedExitCode ?? 0}</p><pre>{commandText(check.command)}</pre></> : <p>文件存在：{show(check.path, true)}</p>}</div>)}</section>}
     <section><h3>失败处理</h3><p>{!failure || failure.action === 'stop' ? '结束本次运行，保留结果与失败原因。' : `${failure.action === 'retry' ? '重试本步骤' : `返回「${loop.definition.steps.find((item) => item.id === failure.target)?.label || failure.target}」`}，最多自动纠正 ${failure.maxAttempts} 次。`}</p></section>
@@ -141,7 +143,7 @@ function StepDetail({ loop, step, home, selectedRun, onDirectoryChange, onScript
   return <div id={`step-${step.id}`} className="step-detail step-configuration">
     {execution.tool !== 'python' && executionDetails}
     <section><h3>任务要求</h3><p>{show(step.instructions)}</p></section>
-    {!!Object.keys(step.inputs || {}).length && <section><h3>使用输入</h3>{Object.entries(step.inputs).map(([key, value]) => <p key={key}>{show(value)}</p>)}</section>}
+    {!!Object.keys(step.inputs || {}).length && <section><h3>使用输入</h3>{Object.entries(step.inputs).map(([key, value]) => <p key={key}>{show(value, false, true)}</p>)}</section>}
 
     {!!step.outputs?.length && <section><h3>产出</h3>{step.outputs.map((item) => <p key={item.id}>{item.label}<small>{item.kind === 'value' ? '数据' : show(item.path, true)}</small></p>)}</section>}
     {execution.tool === 'python' && execution.args?.includes('--model') && <section><h3>模型资源</h3><StepModelSettings execution={execution} config={loop.config} disabled={disabled} onChange={onModelChange} /></section>}
@@ -335,6 +337,6 @@ export function App() {
     {modal?.type === 'run' && <WorkflowInput loop={modal.loop} onClose={() => setModal(null)} act={act} />}
     {modal?.type === 'contract' && <Dialog title="输入和输出" onClose={() => setModal(null)}><div className="contract-details"><section><h3>输入</h3><p>{modal.definition.inputs.map((item) => item.label).join('、') || '无需外部输入'}</p></section><section><h3>输出</h3><WorkflowOutputs definition={modal.definition} /></section></div><div className="dialog-actions artifact-actions"><button className="button button-primary" onClick={() => setModal(null)}>完成</button></div></Dialog>}
     {modal?.type === 'settings' && <Settings settings={settings} loadError={settingsError} onRetry={loadSettings} act={act} updateModels={updateModels} onClose={closeSettings} />}
-    {modal?.type === 'artifact' && <Dialog title={modal.title} onClose={() => setModal(null)}><ArtifactContent content={modal.content} filename={modal.filename} title={modal.title} stepLabels={modal.stepLabels} /><div className="dialog-actions artifact-actions"><button className="button button-primary" onClick={() => setModal(null)}>完成</button></div></Dialog>}
+    {modal?.type === 'artifact' && <Dialog title={modal.title} onClose={() => setModal(null)}><ArtifactContent content={modal.content} filename={modal.filename} title={modal.title} stepLabels={modal.stepLabels} /><div className="dialog-actions artifact-actions">{isLocalPath(modal.filename) && <PathLink path={modal.filename} home={settings?.homeDirectory}>在 Finder 中显示</PathLink>}<button className="button button-primary" onClick={() => setModal(null)}>完成</button></div></Dialog>}
   </ResizablePanels></ModelContext.Provider></PluginProvider>;
 }

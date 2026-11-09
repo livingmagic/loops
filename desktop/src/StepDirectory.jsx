@@ -1,4 +1,5 @@
-import { displayPath } from './path-display.js';
+import { PathLink } from './PathLink.jsx';
+import { displayPath, pathName } from './path-display.js';
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { FolderSimple } from '@phosphor-icons/react';
@@ -42,9 +43,10 @@ export function StepDirectory({ value = '', defaultPath, displayValue, home, dis
   return <div className="step-directory">
     <div className="step-directory-heading"><span>工作目录</span>{current && <button type="button" disabled={disabled || busy} onClick={() => apply('')}>恢复默认</button>}</div>
     <div ref={control} className="step-directory-control" onMouseEnter={revealPath} onMouseLeave={() => setAnchor(null)} onFocus={revealPath} onBlur={() => setAnchor(null)}>
-      <button type="button" className="step-directory-choose" aria-label={`选择工作目录：${label}`} aria-describedby={anchor ? tooltipId : undefined} disabled={disabled || busy || !native} onClick={choose}>
-        <FolderSimple size={18} /><span>{displayPath(label, home)}</span><small>{busy ? '保存中…' : '选择文件夹'}</small>
-      </button>
+      <PathLink path={label} home={home} className="step-directory-open" tooltip={false} describedBy={anchor ? tooltipId : undefined}>
+        <FolderSimple size={18} /><span>{pathName(label, home, 2)}</span>
+      </PathLink>
+      <button type="button" className="step-directory-choose" aria-label="选择工作目录" disabled={disabled || busy || !native} onClick={choose}>{busy ? '保存中…' : '选择文件夹'}</button>
     </div>
     {anchor && createPortal(<div ref={tooltip} id={tooltipId} role="tooltip" className="step-directory-tooltip" style={position}>{displayPath(label, home)}</div>, document.body)}
     {error && <p className="form-error" role="alert">{error}</p>}

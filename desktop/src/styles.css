@@ -969,17 +969,22 @@ h1 { margin: 0; font-size: 23px; line-height: 1.35; font-weight: 700; letter-spa
 .step-directory-heading { display:flex; align-items:center; justify-content:space-between; min-height:20px; color:#6b788a; font-size:12px; }
 .step-directory button { min-height:0; margin:0; font:inherit; cursor:pointer; }
 .step-directory-heading button { padding:0; border:0; background:none; color:#62758e; font-size:11px; }
-.step-directory-control { display:flex; align-items:center; min-width:0; min-height:38px; border:1px solid #d9e1ed; border-radius:8px; background:white; overflow:hidden; }
+.step-directory-control { display:flex; flex-wrap:wrap; align-items:center; min-width:0; min-height:38px; border:1px solid #d9e1ed; border-radius:8px; background:white; overflow:hidden; }
 .step-directory-control:focus-within { border-color:#6d9df8; box-shadow:0 0 0 2px #3377ee15; }
-.step-directory-choose { display:flex; align-items:center; gap:8px; flex:1; min-width:0; padding:9px 10px; border:0; background:none; color:#31445f; font-size:13px; text-align:left; }
-.step-directory-choose > svg { flex-shrink:0; color:#7c8da5; }
-.step-directory-choose > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
-.step-directory-choose > small { flex-shrink:0; font-size:11px; color:#4276c5; }
+.step-directory .step-directory-open { display:flex; align-items:center; gap:8px; flex:1; min-width:0; padding:9px 10px; border:0; background:none; font-size:13px; text-align:left; }
+.step-directory-open > svg { flex-shrink:0; color:#7c8da5; }
+.step-directory-open > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
+.step-directory .step-directory-choose { flex-shrink:0; padding:9px 10px; border:0; border-left:1px solid #e5ebf3; background:none; font-size:11px; color:#4276c5; }
 .step-directory button:hover:not(:disabled) { background:#f3f7fd; color:#2565c1; }
 .step-directory button:disabled { opacity:.5; cursor:default; }
 .step-directory .form-error { margin:2px 0 0; font-size:12px; }
 
 .workflow-path { overflow-wrap:anywhere; }
+.path-link { display:inline; padding:0; border:0; background:none; color:#2565c1; font:inherit; text-align:left; overflow-wrap:anywhere; cursor:pointer; }
+.path-link:hover:not(:disabled) { text-decoration:underline; }
+.path-link:focus-visible { outline:2px solid #6d9df8; outline-offset:2px; border-radius:3px; }
+.path-link:disabled { color:inherit; cursor:default; }
+.path-error { display:block; flex-basis:100%; color:#b43b42; font-size:12px; padding:4px 0; }
 
 .step-directory-tooltip { position:fixed; z-index:1000; width:max-content; max-width:min(480px, calc(100vw - 24px)); padding:9px 12px; border-radius:7px; background:#23344d; color:#fff; box-shadow:0 4px 16px #152d5126; font-size:13px; line-height:1.6; white-space:normal; overflow-wrap:anywhere; pointer-events:none; }
 
