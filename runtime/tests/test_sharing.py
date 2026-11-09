@@ -238,7 +238,14 @@ class SharingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second['items'][-1]['id'], job['id'])
 
     async def test_idempotency_concurrency_revoke_and_ownership(self):
-        loop = await self.build(delay=.4)
+        # Keep the real subprocess running until cancellation, independent of CI speed.
+        gate = self.root / 'release-shared-task'
+        gate.touch()
+        spec = definition()
+        spec['scripts']['scripts/process.py'] = spec['scripts']['scripts/process.py'].replace(
+            'value=c', f'while not Path({str(gate)!r}).exists(): time.sleep(.01)\nvalue=c')
+        loop = await self.build(spec=spec)
+        gate.unlink()
         peer, client = await self.connect()
         jobs = await asyncio.gather(*(self.submit(peer, loop, key=f'job-{i}') for i in range(3)))
         duplicate = await self.submit(peer, loop, key='job-0')
@@ -254,11 +261,16 @@ class SharingTests(unittest.IsolatedAsyncioTestCase):
         await self.host.handle('sharing_approve', {'clientId': self.host.sharing.rows('client')[-1]['id']})
         with self.assertRaisesRegex(ValueError, '无法访问'):
             await self.client.sharing.remote(other, 'task', {'taskId': jobs[0]['id']})
+        queued_ids = [job['id'] for job in self.host.sharing.rows('task') if job['status'] == 'queued']
+        self.assertTrue(queued_ids)
+        active = next(job for job in self.host.sharing.rows('task') if job['status'] == 'running')
         await self.host.handle('sharing_revoke', {'clientId': client['id']})
         with self.assertRaisesRegex(ValueError, '同意连接'):
             await self.client.sharing.remote(peer, 'flows')
-        self.assertEqual(self.host.sharing.get('task', jobs[-1]['id'])['status'], 'stopped')
-        await self.host.handle('sharing_cancel', {'taskId': jobs[0]['id']})
+        for task_id in queued_ids:
+            self.assertEqual(self.host.sharing.get('task', task_id)['status'], 'stopped')
+        self.assertEqual(self.host.sharing.get('task', active['id'])['status'], 'running')
+        await self.host.handle('sharing_cancel', {'taskId': active['id']})
 
     async def test_published_version_and_unpublish_preserve_accepted_tasks(self):
         loop = await self.build(delay=.2)
