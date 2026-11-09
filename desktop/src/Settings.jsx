@@ -13,16 +13,28 @@ function ModelForm({ item, settings, onSave, onCancel }) {
   const [provider, setProvider] = useState(item?.provider || '');
   const [baseUrl, setBaseUrl] = useState(item?.baseUrl || '');
   const existingService = settings.services?.some(entry => entry.configured && entry.provider === provider && (provider !== 'compatible' || entry.baseUrl === baseUrl.trim().replace(/\/$/, '')));
-  const [working, setWorking] = useState(false), [error, setError] = useState('');
+  const [working, setWorking] = useState(false), [testing, setTesting] = useState(false), [error, setError] = useState(''), [tested, setTested] = useState(false);
   const form = useRef(null);
   const selectedProvider = settings.providers?.find(entry => entry.id === provider);
   const catalog = selectedProvider?.models || [];
-  return <form className="settings-card model-form" ref={form} onSubmit={async event => {
-    event.preventDefault(); const values = new FormData(form.current); setWorking(true); setError('');
-    const apiKey = values.get('apiKey'); form.current.elements.apiKey.value = '';
-    try { await onSave({ id: item?.id, provider, name: values.get('name')?.trim() || values.get('model'), model: values.get('model'), baseUrl: values.get('baseUrl'), apiKey }); }
+  function values() {
+    const data = new FormData(form.current);
+    return { id: item?.id, provider, name: data.get('name')?.trim() || data.get('model'), model: data.get('model'), baseUrl: data.get('baseUrl'), apiKey: data.get('apiKey') };
+  }
+  async function testConnection() {
+    if (!form.current.reportValidity()) return;
+    setTesting(true); setError(''); setTested(false);
+    try { await request('model_test', values()); setTested(true); }
+    catch (e) { setError(e.message); }
+    finally { setTesting(false); }
+  }
+  return <form className="settings-card model-form" ref={form} onChange={() => { setTested(false); setError(''); }} onSubmit={async event => {
+    event.preventDefault(); if (testing || working) return; const params = values(); setWorking(true); setError('');
+    form.current.elements.apiKey.value = '';
+    try { await onSave(params); }
     catch(e) { setError(e.message); } finally { setWorking(false); }
   }}>
+    <fieldset disabled={working || testing} style={{ border: 0, padding: 0, margin: 0, minWidth: 0, display: 'contents' }}>
     <label>服务<select required value={provider} onChange={e => setProvider(e.target.value)}><option value="" disabled>请选择服务</option>{settings.providers?.map(entry => <option value={entry.id} key={entry.id}>{entry.name}</option>)}<option value="compatible">OpenAI 兼容服务</option></select></label>
     {provider && <>
       {selectedProvider?.description && <small className="provider-note">{selectedProvider.description}</small>}
@@ -32,8 +44,10 @@ function ModelForm({ item, settings, onSave, onCancel }) {
       <label>API Key<input name="apiKey" type="password" autoComplete="off" required={!existingService} placeholder={existingService ? '已配置，留空使用此服务的已有密钥' : '输入密钥'} /></label>
       {existingService && <small className="provider-note">此服务的模型共用密钥，填写新密钥会统一更新。</small>}
     </>}
+    </fieldset>
     {error && <p className="form-error" role="alert">{error}</p>}
-    <div className="settings-actions"><button type="button" className="button button-secondary" onClick={onCancel} disabled={working}>取消</button><button className="button button-primary" disabled={working || !provider}>{working ? '保存中…' : '保存'}</button></div>
+    {tested && <p role="status">连接成功</p>}
+    <div className="settings-actions"><button type="button" className="button button-secondary" onClick={testConnection} disabled={working || testing || !provider}>{testing ? '测试中…' : '测试连接'}</button><button type="button" className="button button-secondary" onClick={onCancel} disabled={working || testing}>取消</button><button className="button button-primary" disabled={working || testing || !provider}>{working ? '保存中…' : '保存'}</button></div>
   </form>;
 }
 

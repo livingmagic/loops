@@ -114,8 +114,7 @@ export class ModelSettings {
     try { fs.writeFileSync(temporary, JSON.stringify(state), { mode: 0o600 }); fs.renameSync(temporary, this.file); }
     finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
   }
-  save(params) {
-    const state = this.read();
+  prepare(params, state) {
     const existing = params.id && state.models.find(item => item.id === params.id);
     if (params.id && !existing) throw new Error('找不到待编辑的模型。');
     const entry = { id: existing?.id || randomUUID(), name: String(params.name || '').trim(), provider: params.provider, model: String(params.model || '').trim(), thinkingLevel: existing?.thinkingLevel,
@@ -132,6 +131,36 @@ export class ModelSettings {
     const key = typeof params.apiKey === 'string' ? params.apiKey.trim() : '';
     const scope = this.scope(entry);
     if (!key && !state.credentials[scope]) throw new Error('请填写此服务的 API Key。');
+    return { entry, key, scope };
+  }
+  async testConnection(params) {
+    const state = this.read();
+    const { entry, key: suppliedKey, scope } = this.prepare(params, state);
+    let key = suppliedKey;
+    if (!key) {
+      try { key = this.options.decryptSecret(state.credentials[scope]); }
+      catch { throw new Error('无法读取模型密钥，请重新填写 API Key。'); }
+    }
+    if (!key) throw new Error('请填写此服务的 API Key。');
+    const { collection, model } = modelConnection({ ...entry, key });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    try {
+      const reply = await collection.completeSimple(model, { messages: [{ role: 'user', content: 'Reply with OK.', timestamp: Date.now() }] },
+        { apiKey: key, reasoning: entry.thinkingLevel === 'off' ? undefined : entry.thinkingLevel, maxTokens: 1024, signal: controller.signal, maxRetries: 0 });
+      if (controller.signal.aborted) throw new Error('连接超时，请检查网络和 API 地址后重试。');
+      if (['error', 'aborted'].includes(reply.stopReason)) throw new Error(reply.errorMessage || '模型请求失败，请检查配置后重试。');
+      if (!reply.content?.some(part => part.type === 'text' && part.text?.trim())) throw new Error('模型未返回正文，请检查模型配置后重试。');
+      return { success: true };
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error('连接超时，请检查网络和 API 地址后重试。');
+      const message = String(error.message || '模型请求失败，请检查配置后重试。').split(key).join('[已隐藏密钥]').split(encodeURIComponent(key)).join('[已隐藏密钥]').slice(0, 500);
+      throw new Error(message);
+    } finally { clearTimeout(timeout); }
+  }
+  save(params) {
+    const state = this.read();
+    const { entry, key, scope } = this.prepare(params, state);
     if (key) state.credentials[scope] = this.encrypt(key);
     state.models = [...state.models.filter(item => item.id !== entry.id), entry];
     state.defaultId ||= entry.id;
