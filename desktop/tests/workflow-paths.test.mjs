@@ -12,7 +12,7 @@ test('workflow files resolve consistently using the matching real run, preservin
  assert.equal(resolve('${inputs.source}'),'/Users/pc/Loops/a/runs/latest/inputs/source.txt');
  assert.equal(resolve('${inputs.text}'),'本次输入 · 采购清单');
  assert.equal(resolve('/Users/pc/external',true),'/Users/pc/external');
- assert.equal(shortPathText(workspace,'/Users/pc'),'～/Loops/a/runs/latest/workspace');
+ assert.equal(shortPathText(workspace,'/Users/pc'),'~/Loops/a/runs/latest/workspace');
  assert.equal(shortPathText('/Users/pc-other/project','/Users/pc'),'/Users/pc-other/project');
 });
 test('unexecuted revisions never display a previous run as their actual directory',()=>{

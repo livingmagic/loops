@@ -5,7 +5,7 @@ export function workflowPaths(loop, selectedRun) {
   const run = candidates.find(run => run.id === selectedRun) || candidates.at(-1);
   const bundle = run?.directory || `${loop.workdir}/runs/{runId}`;
   const workspace = `${bundle}/workspace`;
-  const absolute = value => value.startsWith('/') || value.startsWith('~') || value.startsWith('～') ? value : `${workspace}/${value.replace(/^\.\//, '')}`;
+  const absolute = value => value.startsWith('/') || value === '~' || value.startsWith('~/') ? value : `${workspace}/${value.replace(/^\.\//, '')}`;
   const resolve = (value, file = false) => {
     if (typeof value !== 'string') return JSON.stringify(value);
     if (Object.hasOwn(loop.definition.scripts || {}, value)) return `${bundle}/${value}`;
@@ -35,5 +35,5 @@ export function shortPathText(text, home) {
   if (!home) return text;
   const root = home.replace(/\/+$/, '');
   // Handle paths embedded in instructions/commands as well as standalone paths.
-  return text === root ? displayPath(text, home) : text.split(root + '/').join('～/');
+  return text === root ? displayPath(text, home) : text.split(root + '/').join('~/');
 }
