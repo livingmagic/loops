@@ -75,7 +75,7 @@ export function Settings({ settings, loadError, onRetry, updateModels, act, onCl
   }
   const needsSetup = settings && !settings.defaultModelId;
   const menu = [['general', Gear, '通用'], ['models', Cube, '模型'], ['trash', Trash, '回收站']];
-  return <div className="dialog-backdrop"><section className="settings-window" role="dialog" aria-modal="true" aria-label={needsSetup && section === 'models' ? '配置模型' : '设置'} tabIndex={-1} ref={panel}>
+  return <div className="dialog-backdrop" onClick={event => { if (event.target === event.currentTarget) onClose(); }}><section className="settings-window" role="dialog" aria-modal="true" aria-label={needsSetup && section === 'models' ? '配置模型' : '设置'} tabIndex={-1} ref={panel}>
     <nav className="settings-nav" aria-label="设置分类"><h2>设置</h2>{menu.map(([id, Icon, title]) => <button key={id} className={section === id ? 'selected' : ''} aria-current={section === id ? 'page' : undefined} onClick={() => { setSection(id); setEditing(null); setError(''); }}><Icon size={21} />{title}</button>)}</nav>
     <div className="settings-content"><header><h2>{section === 'models' && needsSetup ? '配置模型' : menu.find(item => item[0] === section)[2]}</h2><button className="icon-button" aria-label="关闭设置" onClick={onClose}><X size={22} /></button></header>
       {error && <p className="form-error" role="alert">{error}</p>}
