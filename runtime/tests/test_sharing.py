@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from types import SimpleNamespace
 
 from loops_runtime.bridge import Service
-from loops_runtime.sharing_network import local_interfaces, request
+from loops_runtime.sharing_network import discover, local_interfaces, pairing_code, request
 
 
 def definition(delay=0, kind='text'):
@@ -87,6 +87,8 @@ class SharingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_authorization_discovery_execution_and_download(self):
         loop = await self.build()
+        found = await discover(timeout=.1, addresses={'127.0.0.1'})
+        self.assertIn(self.host.sharing.config['id'], {item['id'] for item in found})
         with self.assertRaisesRegex(ValueError, '同意连接'):
             await asyncio.to_thread(request, self.address, 'flows')
         peer, client = await self.connect(False)
@@ -101,9 +103,36 @@ class SharingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job['outputs']['process.report']['text'], 'FROM ANOTHER CLIENT')
         output = await self.client.handle('sharing_download', {'peerId': peer['id'], 'taskId': job['id'], 'index': 0})
         self.assertEqual(json.loads(Path(output['path']).read_text()), job['outputs']['process.report'])
+        repeated = await self.client.handle('sharing_download', {'peerId': peer['id'], 'taskId': job['id'], 'index': 0})
+        self.assertEqual(repeated, output)
+        self.assertEqual(json.loads(Path(repeated['path']).read_text()), job['outputs']['process.report'])
         self.assertNotIn(peer['token'], json.dumps(self.host.sharing.state()))
         self.assertNotIn(peer['token'], json.dumps(self.client.sharing.state()))
         self.assertEqual((self.client.sharing.directory / 'peers' / f"{peer['id']}.json").stat().st_mode & 0o777, 0o600)
+
+    async def test_https_pair_response_cannot_replace_local_identity(self):
+        pair = self.host.sharing.pair
+        def malicious(params, source):
+            return {**pair(params, source), 'id': '../../escaped', 'token': 'attacker',
+                    'fingerprint': '0' * 64, 'address': 'https://attacker.invalid'}
+        with patch.object(self.host.sharing, 'pair', side_effect=malicious):
+            peer, _ = await self.connect()
+            await self.client.handle('sharing_reapply', {'peerId': peer['id']})
+        restored = self.client.sharing.peer(peer['id'])
+        for key in ('id', 'token', 'fingerprint', 'address'):
+            self.assertEqual(restored[key], peer[key])
+        self.assertEqual(restored['fingerprint'], self.host.sharing.fingerprint)
+        self.assertEqual(restored['address'], self.address)
+        self.assertEqual((await self.client.sharing.remote(restored, 'flows'))['flows'], [])
+        self.assertFalse((self.client.store.root / 'escaped.json').exists())
+
+    async def test_https_pair_code_must_match_observed_certificate(self):
+        def relayed(params, source):
+            return {'status': 'pending', 'code': pairing_code('0' * 64, params['token'])}
+        with patch.object(self.host.sharing, 'pair', side_effect=relayed):
+            with self.assertRaisesRegex(ValueError, '配对身份'):
+                await self.client.handle('sharing_connect', {'address': self.address})
+        self.assertEqual(self.client.sharing.peers(), [])
 
     async def test_builtin_greeting_runs_over_authorized_connection_and_tracks_host_rename(self):
         loop = next(loop for loop in self.host.store.list() if loop.get('builtin') == 'greeting')
@@ -161,7 +190,7 @@ class SharingTests(unittest.IsolatedAsyncioTestCase):
         peer, _ = await self.connect()
         job = await self.submit(peer, loop)
         alternate = {**peer, 'address': f"https://{other}:{self.host.sharing.config['port']}"}
-        state = await self.host.handle('sharing_settings', {'disabledAddresses': ['127.0.0.1']})
+        state = await self.host.handle('sharing_settings', {'addressOverrides': {'127.0.0.1': False, other: True}})
         self.assertNotIn(self.address, state['addresses'])
         self.assertFalse(next(item for item in state['addressOptions'] if item['ip'] == '127.0.0.1')['enabled'])
         with self.assertRaises(OSError):
@@ -175,34 +204,34 @@ class SharingTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PermissionError):
             self.host.sharing.check_address(SimpleNamespace(scope={'server': ('127.0.0.1', 443)}, headers={'host': other}))
         with self.assertRaises(ValueError):
-            await self.client.sharing.remote(alternate, 'sharing_settings', {'disabledAddresses': []})
+            await self.client.sharing.remote(alternate, 'sharing_settings', {'addressOverrides': {}})
         await self.host.handle('shutdown', {})
         self.host.store.db.close()
         self.host = Service(self.root / 'host', self.events.append)
         await self.host.handle('list', {})
-        self.assertEqual(self.host.sharing.config['disabledAddresses'], ['127.0.0.1'])
+        self.assertEqual(self.host.sharing.config['addressOverrides'], {'127.0.0.1': False, other: True})
         with self.assertRaises(OSError):
             await asyncio.to_thread(request, self.address, 'identity')
         self.assertEqual((await self.client.sharing.remote(alternate, 'task', {'taskId': job['id']}))['status'], 'success')
-        restored = await self.host.handle('sharing_settings', {'disabledAddresses': []})
+        restored = await self.host.handle('sharing_settings', {'addressOverrides': {other: True}})
         self.assertIn(self.address, restored['addresses'])
         self.assertEqual((await self.client.sharing.remote(peer, 'flows'))['flows'][0]['id'], loop['id'])
 
     async def test_address_selection_validation_and_disabled_service(self):
         initial = self.host.sharing.state()
         addresses = [item['ip'] for item in initial['addressOptions']]
-        for invalid in ('127.0.0.1', [None], ['not-an-ip'], ['::1']):
+        for invalid in ('127.0.0.1', [], {'not-an-ip': True}, {'::1': True}, {'127.0.0.1': 1}):
             with self.assertRaisesRegex(ValueError, '连接地址'):
-                await self.host.handle('sharing_settings', {'disabledAddresses': invalid})
+                await self.host.handle('sharing_settings', {'addressOverrides': invalid})
         with self.assertRaisesRegex(ValueError, '至少启用一个'):
-            await self.host.handle('sharing_settings', {'disabledAddresses': addresses})
-        self.assertEqual(self.host.sharing.config['disabledAddresses'], [])
-        stopped = await self.host.handle('sharing_settings', {'enabled': False, 'disabledAddresses': addresses})
+            await self.host.handle('sharing_settings', {'addressOverrides': {ip: False for ip in addresses}})
+        self.assertEqual(self.host.sharing.config['addressOverrides'], {})
+        stopped = await self.host.handle('sharing_settings', {'enabled': False, 'addressOverrides': {ip: False for ip in addresses}})
         self.assertFalse(stopped['online'])
         with self.assertRaisesRegex(ValueError, '至少启用一个'):
             await self.host.handle('sharing_settings', {'enabled': True})
         self.assertFalse(self.host.sharing.config['enabled'])
-        local_only = await self.host.handle('sharing_settings', {'enabled': True, 'disabledAddresses': [ip for ip in addresses if ip != '127.0.0.1']})
+        local_only = await self.host.handle('sharing_settings', {'enabled': True, 'addressOverrides': {ip: ip == '127.0.0.1' for ip in addresses}})
         self.assertEqual(local_only['addresses'], [self.address])
         self.assertEqual(self.host.sharing.listening_addresses, {'127.0.0.1'})
 
