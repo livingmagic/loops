@@ -18,7 +18,7 @@ def definition():
     return {'schemaVersion': 2, 'title': '混合任务', 'goal': '分析和复核', 'completion': '报告存在',
             'inputs': [], 'scripts': {}, 'finalOutputs': ['${steps.review.outputs.report}'],
             'steps': [{'id': key, 'label': key, 'instructions': '给出报告正文', 'inputs': {},
-                       'execution': {'tool': 'agent', 'mode': 'read-only', 'session': 'shared', 'responseOutput': 'report', **extra},
+                       'execution': {'tool': 'agent', 'mode': 'read-only', 'responseOutput': 'report', **extra},
                        'outputs': [{'id': 'report', 'label': '报告', 'path': key + '.txt'}], 'checks': []}
                       for key, extra in [('analyze', {}), ('review', {'agentId': 'codex'}), ('followup', {})]]}
 
@@ -74,6 +74,7 @@ class AgentWorkflowTests(unittest.IsolatedAsyncioTestCase):
         await self.build()
         trial = self.service.runner.start(self.loop['id'])
         await self.service.runner.tasks[trial['id']]
+        self.assertEqual(self.clients.created, ['mimo', 'codex'])
         await self.service.handle('save', {'loopId': self.loop['id']})
         self.clients.calls.clear()
         self.clients.created.clear()
@@ -91,6 +92,44 @@ class AgentWorkflowTests(unittest.IsolatedAsyncioTestCase):
         current = self.service.store.get(self.loop['id'])
         self.assertNotEqual(current['revision'], current['savedRevision'])
         self.assertEqual(json.loads((Path(current['versions'][0]['path'])/'loop.json').read_text())['config']['defaultAgentId'], 'mimo')
+
+    async def test_explicit_session_isolates_context_and_can_be_reused(self):
+        flow = definition()
+        independent = copy.deepcopy(flow['steps'][2])
+        independent.update(id='independent', label='独立复核')
+        independent['execution']['session'] = 'independent-review'
+        independent['outputs'][0]['path'] = 'independent.txt'
+        continuation = copy.deepcopy(independent)
+        continuation.update(id='continuation', label='继续独立复核')
+        continuation['outputs'][0]['path'] = 'continuation.txt'
+        flow['steps'].insert(2, independent)
+        flow['steps'].append(continuation)
+        await self.service.handle('definition', {'loopId': self.loop['id'], 'definition': flow})
+        run = await self.service.handle('start', {'loopId': self.loop['id']})
+        await self.service.runner.tasks[run['id']]
+        result = self.service.store.run(self.loop['id'], run['id'])
+        self.assertEqual(result['status'], 'success', result.get('reason'))
+        self.assertEqual(self.clients.created, ['mimo', 'codex', 'mimo'])
+        self.assertEqual(len(self.clients.calls), 5)
+        self.assertEqual(len(result['agentSessions']), 3)
+
+    async def test_default_sessions_still_isolate_permissions_and_reasoning(self):
+        for override in [{'mode': 'write'}, {'reasoning': 'high'}]:
+            with self.subTest(override=override):
+                flow = definition()
+                followup = flow['steps'][2]
+                followup['execution'].pop('responseOutput')
+                followup['outputs'] = []
+                followup['checks'] = [{'kind': 'file', 'path': 'analyze.txt'}]
+                followup['execution'].update(override)
+                await self.service.handle('definition', {'loopId': self.loop['id'], 'definition': flow})
+                self.clients.created.clear()
+                run = await self.service.handle('start', {'loopId': self.loop['id']})
+                await self.service.runner.tasks[run['id']]
+                result = self.service.store.run(self.loop['id'], run['id'])
+                self.assertEqual(result['status'], 'success', result.get('reason'))
+                self.assertEqual(self.clients.created, ['mimo', 'codex', 'mimo'])
+                self.assertEqual(len(result['agentSessions']), 3)
 
     async def test_custom_directories_are_persisted_frozen_and_isolate_sessions(self):
         await self.build()
