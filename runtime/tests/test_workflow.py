@@ -216,15 +216,16 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run["status"], "success", run.get("reason"))
         before = self.service.store.get(self.loop["id"])
         files = {str(path): path.read_bytes() for path in Path(before["workdir"]).rglob("*") if path.is_file()}
+        remaining = [loop for loop in self.service.store.list() if loop['id'] != self.loop['id']]
         await self.service.handle("delete", {"loopId": self.loop["id"]})
-        self.assertEqual(await self.service.handle("list", {}), [])
+        self.assertEqual(await self.service.handle("list", {}), remaining)
         self.assertEqual((await self.service.handle("trash", {}))[0]["id"], self.loop["id"])
         for method, params in [("start", {}), ("save", {}), ("definition", {"definition": flow()})]:
             with self.assertRaisesRegex(ValueError, "回收站"):
                 await self.service.handle(method, {"loopId": self.loop["id"], **params})
         restarted = Service(self.temp.name, lambda event: None, workspace_root=Path(self.temp.name) / "workspaces")
         try:
-            self.assertEqual(await restarted.handle("list", {}), [])
+            self.assertEqual(await restarted.handle("list", {}), remaining)
             restored = await restarted.handle("restore", {"loopId": self.loop["id"]})
             self.assertEqual(restored, before)
             self.assertEqual(restored["savedRevision"], saved["savedRevision"])

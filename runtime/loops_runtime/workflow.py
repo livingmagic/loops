@@ -233,6 +233,7 @@ class Workflow:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         arguments = self.resolve(step.get("inputs", {}))
         context = {"inputs": arguments, "outputs": outputs, "workspace": str(self.workspace), "workingDirectory": str(cwd), "bundle": str(self.directory),
+                   "host": self.c.run.get('host', {}),
                    "scripts": {name: str(self.directory / name) for name in self.c.run['definition'].get('scripts', {})},
                    "resources": self.values["resources"], "failure": self.values["failure"], "checks": self.values["checks"]}
         env = command_environment()

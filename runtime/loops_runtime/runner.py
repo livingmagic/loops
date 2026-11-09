@@ -4,6 +4,7 @@ import json
 import os
 import signal
 import shlex
+import socket
 import sys
 from pathlib import Path
 
@@ -18,12 +19,13 @@ class ExecutionError(RuntimeError):
 
 
 class Runner:
-    def __init__(self, store, notify, session_factory=None, connectors=None, agent_clients=None, model_host=None):
+    def __init__(self, store, notify, session_factory=None, connectors=None, agent_clients=None, model_host=None, host_name=None):
         self.store, self.notify, self.session_factory = store, notify, session_factory
         self.tasks = {}
         self.connectors = connectors
         self.agent_clients = agent_clients or AgentClients(store.root)
         self.model_host = model_host
+        self.host_name = host_name or (lambda: socket.gethostname().split('.')[0])
 
     def start(self, loop_id, inputs=None, snapshot=None):
         loop = self.store.get(loop_id)
@@ -61,6 +63,8 @@ class Runner:
         context.agent_clients = self.agent_clients
         context.model_host = self.model_host
         try:
+            context.run['host'] = {'name': self.host_name()}
+            self.store.update_run(loop_id, run_id, host=context.run['host'])
             from .workflow_models import selections as model_selections
             selected = model_selections(context.run['definition'], context.run['config'])
             if selected:

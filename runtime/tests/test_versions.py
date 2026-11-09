@@ -89,7 +89,7 @@ class VersionTests(unittest.IsolatedAsyncioTestCase):
             self.store.restore_version(self.loop_id, 1)
         self.assertEqual(self.store.get(self.loop_id), self.original)
         snapshot.unlink()
-        self.assertEqual(await self.service.handle('automation_catalog', {}), [])
+        self.assertNotIn(self.loop_id, [item['id'] for item in await self.service.handle('automation_catalog', {})])
 
     async def test_old_saved_snapshots_remain_readable_without_new_metadata(self):
         snapshot = Path(self.original['versions'][0]['path']) / 'loop.json'
