@@ -16,7 +16,7 @@ export function workflowPaths(loop, selectedRun) {
       if (kind === 'resources') return loop.config.resources?.find(item => item.id === id)?.path || original;
       if (kind === 'inputs') {
         const input = loop.definition.inputs?.find(item => item.id === id);
-        return input?.kind === 'file' ? (run?.inputs?.[id] || loop.config.inputDefaults?.[id] || original) : `本次输入 · ${input?.label || id}`;
+        return input?.kind === 'file' ? (run?.inputs?.[id] || loop.config.inputDefaults?.[id] || original) : (input?.label || id);
       }
       if (kind === 'steps') {
         const step = loop.definition.steps.find(item => item.id === id);

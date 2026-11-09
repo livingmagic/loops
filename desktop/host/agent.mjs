@@ -14,11 +14,12 @@ const checkSchema = Type.Union([
   Type.Object({ kind: Type.Literal('command'), label: Type.String(), command, expectedExitCode: Type.Integer() }),
   Type.Object({ kind: Type.Literal('file'), path: Type.String() }),
 ]);
+const dataType = Type.Optional(Type.Union(['string', 'object', 'array', 'number', 'boolean', 'null'].map(value => Type.Literal(value)), { description: '产出数据的预期 JSON 类型，用于展示内容类型；按脚本或工具契约填写，不确定或类型可变时省略。逐项执行的汇总产出为 array。' }));
 const definitionSchema = Type.Object({
   schemaVersion: Type.Literal(2),
   title: Type.String(), goal: Type.String(), completion: Type.String(),
   inputs: Type.Array(Type.Object({ id: Type.String(), label: Type.String(), kind: Type.Union([Type.Literal('file'), Type.Literal('text')]), required: Type.Boolean() })),
-  finalOutputs: Type.Array(Type.String({ pattern: '^\\$\\{steps\\.[a-zA-Z][a-zA-Z0-9_-]*\\.outputs\\.[a-zA-Z][a-zA-Z0-9_-]*\\}$' }), { uniqueItems: true, description: '最终交付清单，逐项引用 ${steps.步骤ID.outputs.产出ID}；数据产出保留原始类型传递，并由平台保存为 JSON 供查看。无交付时使用空数组。' }),
+  finalOutputs: Type.Array(Type.String({ pattern: '^\\$\\{steps\\.[a-zA-Z][a-zA-Z0-9_-]*\\.outputs\\.[a-zA-Z][a-zA-Z0-9_-]*\\}$' }), { uniqueItems: true, description: '最终交付清单，逐项引用 ${steps.步骤ID.outputs.产出ID}；数据产出保留原始类型传递并保存在运行记录中供查看。无交付时使用空数组。' }),
   scripts: Type.Record(Type.String(), Type.String({ description: '完整 Python 源码；路径为 scripts/name.py。随配置版本保存。' })),
   steps: Type.Array(Type.Object({
     id: Type.String(), label: Type.String(), instructions: Type.String({ description: '说明业务任务与处理规则，不重复 execution 中可调整的参数值。不重复写模型名或思考档位。' }),
@@ -32,8 +33,9 @@ const definitionSchema = Type.Object({
     ]),
     outputs: Type.Array(Type.Union([
       Type.Object({ id: Type.String(), label: Type.String(), path: Type.String({ description: '本次工作区内的实际文件路径；不支持目录产出。' }), kind: Type.Optional(Type.Union([Type.Literal('file'), Type.Literal('json')], { description: '默认 file 传递文件路径；json 要求脚本生成有效 JSON 文件，平台解析后传递对象或数组。脚本仍写入 LOOPS_CONTEXT.outputs 指定文件路径。' })) }),
-      Type.Object({ id: Type.String(), label: Type.String(), kind: Type.Literal('value'), source: Type.Literal('stdout'), format: Type.Literal('json'), pointer: Type.Optional(Type.String({ description: '命令标准输出的 JSON Pointer；省略取整个 JSON。逐项执行按顺序汇总数组。' })) }),
-      Type.Object({ id: Type.String(), label: Type.String(), kind: Type.Literal('value'), pointer: Type.String({ description: '仅用于 MCP 返回。JSON Pointer：/payload 取业务数据，/payload/字段 取具体字段，/links 取链接列表，/result 取原始协议结果；空字符串取完整响应。不存在的字段会使步骤失败。' }) }),
+      Type.Object({ id: Type.String(), label: Type.String(), kind: Type.Literal('value'), dataType, source: Type.Literal('result'), pointer: Type.Optional(Type.String({ description: 'Python 数据产出：脚本将文本、对象、数组、数字、布尔值或 null 对应的 Python 值赋给顶层 result；不要 json.dumps 后再赋值。平台通过管道接收，print 仅为日志。pointer 使用 JSON Pointer，省略取整个结果；无需 path 或写文件。协议帧上限 900 KB，超过时使用文件产出。' })) }, { additionalProperties: false }),
+      Type.Object({ id: Type.String(), label: Type.String(), kind: Type.Literal('value'), dataType, source: Type.Literal('stdout'), format: Type.Literal('json'), pointer: Type.Optional(Type.String({ description: '命令标准输出的 JSON Pointer；省略取整个 JSON。逐项执行按顺序汇总数组。' })) }),
+      Type.Object({ id: Type.String(), label: Type.String(), kind: Type.Literal('value'), dataType, pointer: Type.String({ description: '仅用于 MCP 返回。JSON Pointer：/payload 取业务数据，/payload/字段 取具体字段，/links 取链接列表，/result 取原始协议结果；空字符串取完整响应。不存在的字段会使步骤失败。' }) }),
     ])),
     checks: Type.Array(checkSchema),
     onFailure: Type.Object({ action: Type.Union([Type.Literal('stop'), Type.Literal('retry'), Type.Literal('goto')]), target: Type.Optional(Type.String()), maxAttempts: Type.Integer({ minimum: 0, maximum: 5 }) }),

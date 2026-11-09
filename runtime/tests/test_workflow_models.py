@@ -87,6 +87,17 @@ class WorkflowModelsTests(unittest.IsolatedAsyncioTestCase):
         await self.service.runner.tasks[run['id']]
         return self.service.store.run(self.loop['id'], run['id'])
 
+    async def test_model_result_can_return_direct_data_without_a_file(self):
+        spec = definition(self.resource)
+        spec['scripts']['scripts/main.py'] = spec['scripts']['scripts/main.py'].replace("Path(c['outputs']['text']).write_text(complete(c['inputs']['text'], model=args.model, reasoning=args.reasoning, max_tokens=128))", "result = complete(c['inputs']['text'], model=args.model, reasoning=args.reasoning, max_tokens=128)")
+        spec['steps'][0]['outputs'] = [{'id': 'text', 'label': '结果', 'kind': 'value', 'source': 'result'}]
+        await self.build(spec)
+        run = await self.execute()
+        self.assertEqual(run['status'], 'success', run.get('reason'))
+        self.assertEqual(run['artifacts'][0]['value'], 'HELLO')
+        self.assertEqual(run['stepResults'][0]['outputFiles'], {})
+        self.assertEqual(len(self.host.calls), 1)
+
     async def test_script_calls_declared_model_and_preserves_real_result(self):
         await self.build()
         with patch.dict(os.environ, {'DEEPSEEK_API_KEY': 'must-not-inherit', 'OPENAI_API_KEY': 'must-not-inherit'}):

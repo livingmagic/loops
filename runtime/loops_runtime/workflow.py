@@ -78,6 +78,7 @@ class Workflow:
         self.value_artifacts, self.connector_calls, self.writes_started = {}, [], set()
         self.output_files = {}
         self.command_calls = []
+        self.inline_artifacts = {}
 
     def resolve(self, value):
         def lookup(key):
@@ -328,12 +329,41 @@ class Workflow:
                     raise ValueError("回复保存位置需要引用本步骤产出标识。")
                 Path(outputs[execution["responseOutput"]]).write_text(answer)
         elif tool == "python":
-            if step['id'] in self.c.run.get('modelSelections', {}):
+            declared = [item for item in step.get('outputs', []) if item.get('kind') == 'value']
+            received = []
+            async def rpc(message):
+                if message.get('op') == 'output' and declared:
+                    if received or 'value' not in message:
+                        raise ValueError('Python 数据产出无效或重复。')
+                    received.append(message['value'])
+                    return None
                 from .workflow_models import call_model
+                return await call_model(self.c, step, message)
+            if declared or step['id'] in self.c.run.get('modelSelections', {}):
+                if declared:
+                    env['LOOPS_VALUE_OUTPUT'] = '1'
                 argv = [sys.executable, str(Path(__file__).with_name('model_worker.py')), str(self.directory / execution['script']), *execution.get('args', [])]
-                await self.command(argv, cwd, env, label=step['label'], rpc=lambda message: call_model(self.c, step, message))
+                await self.command(argv, cwd, env, label=step['label'], rpc=rpc)
             else:
                 await self.command([sys.executable, str(self.directory / execution["script"]), *execution.get("args", [])], cwd, env, label=step["label"])
+            if declared:
+                if not received:
+                    raise ValueError('Python 未返回数据产出。')
+                from .workflow_connectors import pointer_value
+                values = {item['id']: pointer_value(received[0], item.get('pointer', '')) for item in declared}
+                for item in declared:
+                    value = values[item['id']]
+                    outputs[item['id']] = value
+                    ref = '${steps.' + step['id'] + '.outputs.' + item['id'] + '}'
+                    if len(json.dumps(value)) > 100000:
+                        path = self.directory / 'results' / step['id'] / f"{item['id']}.json"
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text(json.dumps(value, ensure_ascii=False))
+                        self.value_artifacts[ref] = str(path)
+                        self.output_files.setdefault(step['id'], {})[item['id']] = str(path)
+                        self.artifacts[str(path)] = {'title': item['label'], 'path': str(path)}
+                    else:
+                        self.inline_artifacts[ref] = {'title': item['label'], 'ref': ref, 'value': value}
         else:
             await self.command_step(step, execution, cwd, env, outputs)
         for check in step.get("checks", []):
@@ -364,13 +394,16 @@ class Workflow:
         declared = declared_outputs(definition)
         selected = {}
         for ref in definition["finalOutputs"]:
+            if ref in self.inline_artifacts:
+                selected[ref] = self.inline_artifacts[ref]
+                continue
             try:
                 path = self.value_artifacts[ref] if ref in self.value_artifacts else self.resolve(ref)
             except ValueError:
                 continue  # The producing step has not completed yet.
             if isinstance(path, str) and path in self.artifacts:
                 selected[path] = {"title": declared[ref]["label"], "path": path}
-        return {"artifacts": list(selected.values()), "intermediateArtifacts": [item for path, item in self.artifacts.items() if path not in selected]}
+        return {"artifacts": list(selected.values()), "intermediateArtifacts": [item for path, item in {**self.artifacts, **self.inline_artifacts}.items() if path not in selected]}
 
     async def run(self, definition):
         await self.prepare()
@@ -414,6 +447,7 @@ class Workflow:
                     self.output_files.pop(invalid["id"], None)
                     for output in invalid.get('outputs', []):
                         ref = '${steps.' + invalid['id'] + '.outputs.' + output['id'] + '}'
+                        self.inline_artifacts.pop(ref, None)
                         path = self.value_artifacts.pop(ref, None)
                         if path:
                             self.artifacts.pop(path, None)

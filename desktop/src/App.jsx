@@ -13,7 +13,7 @@ import { ArrowUpRight, ArrowCounterClockwise, CaretDown, CaretRight, CheckCircle
 import { native, request, subscribe } from './api.js';
 import { PathLink } from './PathLink.jsx';
 import { isLocalPath } from './path-display.js';
-import { workflowOutputs } from './workflow-outputs.js';
+import { workflowOutputs, outputType, inputType, inputLabel } from './workflow-outputs.js';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PanelDivider, ResizablePanels } from './ResizablePanels.jsx';
@@ -84,10 +84,10 @@ function RunCard({ loop, run, artifact, selected }) {
     <div className="run-input"><FileText size={16} />{run.input.name}<small>{date(run.startedAt)}</small></div>
     {active && <div className="run-current"><strong>{current?.label || '准备工作区'}</strong></div>}
     {run.reason && run.status !== 'success' && <p className="result-reason">{run.reason.trim().split(/\r?\n/, 1)[0]}</p>}
-    <div className="real-artifacts">{run.artifacts.map((item) => <button key={item.path || item.url} onClick={() => artifact(item, run)}>{item.url ? <GitPullRequest size={19} /> : <FileText size={19} />}<span>{item.title}</span><ArrowUpRight size={16} /></button>)}</div>
+    <div className="real-artifacts">{run.artifacts.map((item) => <button key={item.ref || item.path || item.url} onClick={() => artifact(item, run)}>{item.url ? <GitPullRequest size={19} /> : <FileText size={19} />}<span>{item.title}</span><ArrowUpRight size={16} /></button>)}</div>
     {!!latestChecks.length && <details className="run-checks" open={run.status === 'failed'}><summary><CaretRight size={15} />{passedChecks === latestChecks.length ? `${latestChecks.length} 项检查通过` : `${passedChecks}/${latestChecks.length} 项检查通过`}</summary>{latestChecks.map((check) => <div className="check-row" key={`${check.stage || check.kind}-${check.label || check.kind}`}>{check.passed ? <CheckCircle size={21} /> : <WarningCircle size={21} />}<span>{check.label}</span><span className="check-count">{check.passed ? '通过' : '未通过'}</span></div>)}</details>}
     <button className="disclosure" aria-expanded={details} onClick={() => setDetails(!details)}><CaretRight size={15} className={details ? 'rotate' : ''} />执行详情{!!run.corrections && ` · 按失败策略重跑 ${run.corrections} 次`}</button>
-    {details && <div className="real-events">{!!run.intermediateArtifacts?.length && <div className="real-artifacts">{run.intermediateArtifacts.map((item) => <button key={item.path} onClick={() => artifact(item, run)}><FileText size={19} /><span>{item.title}</span><ArrowUpRight size={16} /></button>)}</div>}{run.reason?.includes('\n') && <pre>{run.reason}</pre>}{run.events.map((event, index) => <div key={index}><time>{date(event.at)}</time><pre>{event.text}</pre></div>)}</div>}
+    {details && <div className="real-events">{!!run.intermediateArtifacts?.length && <div className="real-artifacts">{run.intermediateArtifacts.map((item) => <button key={item.ref || item.path} onClick={() => artifact(item, run)}><FileText size={19} /><span>{item.title}</span><ArrowUpRight size={16} /></button>)}</div>}{run.reason?.includes('\n') && <pre>{run.reason}</pre>}{run.events.map((event, index) => <div key={index}><time>{date(event.at)}</time><pre>{event.text}</pre></div>)}</div>}
   </div></div>;
 }
 
@@ -100,7 +100,7 @@ function WorkflowInput({ loop, onClose, act }) {
 }
 function WorkflowOutputs({ definition }) {
   const outputs = workflowOutputs(definition);
-  return outputs.length ? outputs.map((output, index) => <p key={index}>{output.label}{output.path && !output.label.includes(basename(output.path)) && `（${basename(output.path)}）`}</p>) : <p>无文件输出</p>;
+  return outputs.length ? outputs.map((output, index) => <p key={index}><span className="contract-item">{output.label}<span className="contract-type">{outputType(output)}</span></span>{output.path && !output.label.includes(basename(output.path)) && `（${basename(output.path)}）`}</p>) : <p>无输出</p>;
 }
 
 function RollbackDialog({ loop, version, act, onClose, onRestored }) {
@@ -143,9 +143,9 @@ function StepDetail({ loop, step, home, selectedRun, onDirectoryChange, onScript
   return <div id={`step-${step.id}`} className="step-detail step-configuration">
     {execution.tool !== 'python' && executionDetails}
     <section><h3>任务要求</h3><p>{show(step.instructions)}</p></section>
-    {!!Object.keys(step.inputs || {}).length && <section><h3>使用输入</h3>{Object.entries(step.inputs).map(([key, value]) => <p key={key}>{show(value, false, true)}</p>)}</section>}
+    {!!Object.keys(step.inputs || {}).length && <section><h3>使用输入</h3>{Object.entries(step.inputs).map(([key, value]) => <p key={key} className="contract-item">{inputLabel(loop.definition, value) ?? show(value, false, true)}{inputType(loop.definition, value) && <span className="contract-type">{inputType(loop.definition, value)}</span>}</p>)}</section>}
 
-    {!!step.outputs?.length && <section><h3>产出</h3>{step.outputs.map((item) => <p key={item.id}>{item.label}<small>{item.kind === 'value' ? '数据' : show(item.path, true)}</small></p>)}</section>}
+    {!!step.outputs?.length && <section><h3>产出</h3>{step.outputs.map((item) => <p key={item.id}><span className="contract-item">{item.label}<span className="contract-type">{outputType(item)}</span></span>{item.kind !== 'value' && <small>{show(item.path, true)}</small>}</p>)}</section>}
     {execution.tool === 'python' && execution.args?.includes('--model') && <section><h3>模型资源</h3><StepModelSettings execution={execution} config={loop.config} disabled={disabled} onChange={onModelChange} /></section>}
     {execution.tool === 'python' && <details className="step-technical-details"><summary>执行详情</summary>{executionDetails}</details>}
   </div>;
@@ -293,7 +293,7 @@ export function App() {
   async function showArtifact(item, run) {
     try {
       if (item.url) { if (native) await window.loops.openUrl(item.url); else window.open(item.url, '_blank', 'noopener'); return; }
-      const file = await act('artifact', { loopId: loop.id, runId: run.id, path: item.path });
+      const file = await act('artifact', { loopId: loop.id, runId: run.id, path: item.path, ref: item.ref });
       setModal({ type: 'artifact', ...file, filename: item.path, stepLabels: Object.fromEntries(run.definition.steps.map((step) => [step.id, step.label])) });
     } catch (error) { setError(error.message); }
   }
@@ -335,7 +335,7 @@ export function App() {
     {!!localRuns.length && <section className="history-section"><h2>运行记录</h2><div className="run-history">{[...localRuns].reverse().map((run) => <button key={run.id} className={cx('history-row', run.status, selectedRun === run.id && 'active-history')} onClick={() => { selectRun(run.id); follow.current = false; document.getElementById(run.id)?.scrollIntoView({ block: 'center', behavior: 'smooth' }); }}><span>{run.status === 'success' ? <CheckCircle size={25} weight="fill" /> : activeStatuses.includes(run.status) ? <SpinnerGap size={25} className="spinning" /> : <WarningCircle size={25} />}</span><span><b>{`${runName(run)} · ${statuses[run.status]}`}</b><small>版本 {run.revision}{run.mode === 'trial' ? ' · 草稿' : ''} · {run.input.name}</small></span><CaretRight size={16} /></button>)}</div></section>}</aside></div></main>}
     {modal?.type === 'rollback' && <RollbackDialog loop={modal.loop} version={modal.version} act={act} onClose={() => setModal(null)} onRestored={() => { chooseVersion(null); setModal(null); }} />}
     {modal?.type === 'run' && <WorkflowInput loop={modal.loop} onClose={() => setModal(null)} act={act} />}
-    {modal?.type === 'contract' && <Dialog title="输入和输出" onClose={() => setModal(null)}><div className="contract-details"><section><h3>输入</h3><p>{modal.definition.inputs.map((item) => item.label).join('、') || '无需外部输入'}</p></section><section><h3>输出</h3><WorkflowOutputs definition={modal.definition} /></section></div><div className="dialog-actions artifact-actions"><button className="button button-primary" onClick={() => setModal(null)}>完成</button></div></Dialog>}
+    {modal?.type === 'contract' && <Dialog title="输入和输出" onClose={() => setModal(null)}><div className="contract-details"><section><h3>输入</h3>{modal.definition.inputs.length ? modal.definition.inputs.map(item => <p key={item.id} className="contract-item">{item.label}<span className="contract-type">{item.kind === 'file' ? '文件' : '文本'}</span></p>) : <p>无需外部输入</p>}</section><section><h3>输出</h3><WorkflowOutputs definition={modal.definition} /></section></div><div className="dialog-actions artifact-actions"><button className="button button-primary" onClick={() => setModal(null)}>完成</button></div></Dialog>}
     {modal?.type === 'settings' && <Settings settings={settings} loadError={settingsError} onRetry={loadSettings} act={act} updateModels={updateModels} onClose={closeSettings} />}
     {modal?.type === 'artifact' && <Dialog title={modal.title} onClose={() => setModal(null)}><ArtifactContent content={modal.content} filename={modal.filename} title={modal.title} stepLabels={modal.stepLabels} /><div className="dialog-actions artifact-actions">{isLocalPath(modal.filename) && <PathLink path={modal.filename} home={settings?.homeDirectory}>在 Finder 中打开</PathLink>}<button className="button button-primary" onClick={() => setModal(null)}>完成</button></div></Dialog>}
   </ResizablePanels></ModelContext.Provider></PluginProvider>;

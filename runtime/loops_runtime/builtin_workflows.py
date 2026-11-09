@@ -5,34 +5,50 @@ def greeting():
     return {
         'schemaVersion': 2,
         'title': '打个招呼',
-        'goal': '发送一句招呼，验证共享连接和流程调用。',
-        'completion': '“天王盖地虎”回复“小鸡炖蘑菇”；“你好，我是{名字}”回复本机名称；其他输入返回随机乱码。',
+        'goal': '拆分一句或多句招呼，逐段回复，体验多步骤流程和共享调用。',
+        'completion': '按句末标点分段，逐段回复后用句号连接：“天王盖地虎”回复“小鸡炖蘑菇”；“你好，我是{名字}”回复本机名称；其他内容返回随机乱码。',
         'inputs': [{'id': 'text', 'label': '招呼', 'kind': 'text', 'required': False}],
-        'scripts': {'scripts/greeting.py': '''import json
+        'scripts': {'scripts/recognize.py': '''import json
+import os
+import re
+
+context = json.loads(os.environ['LOOPS_CONTEXT'])
+text = context['inputs']['text']
+# Commas belong to a greeting, such as “你好，我是小王”.
+result = [part.strip() for part in re.split(r'[。！？!?；;.\\r\\n…]+', text) if part.strip()] or ['']
+''', 'scripts/greeting.py': '''import json
 import os
 import re
 import secrets
 import string
-from pathlib import Path
 
 context = json.loads(os.environ['LOOPS_CONTEXT'])
-text = context['inputs']['text']
-introduction = re.fullmatch(r'你好，我是(.+)', text)
-if text == '天王盖地虎':
-    reply = '小鸡炖蘑菇'
-elif introduction and introduction.group(1).strip():
-    reply = '你好，我是' + context['host']['name']
-else:
-    alphabet = string.ascii_letters + string.digits + '!@#$%^&*'
-    reply = ''.join(secrets.choice(alphabet) for _ in range(24))
-Path(context['outputs']['reply']).write_text(json.dumps(reply, ensure_ascii=False), encoding='utf-8')
+replies = []
+for segment in context['inputs']['greeting']:
+    introduction = re.fullmatch(r'你好[，,]\\s*我是(.+)', segment)
+    if segment == '天王盖地虎':
+        reply = '小鸡炖蘑菇'
+    elif introduction and introduction.group(1).strip():
+        reply = '你好，我是' + context['host']['name']
+    else:
+        alphabet = string.ascii_letters + string.digits + '!@#$%^&*'
+        reply = ''.join(secrets.choice(alphabet) for _ in range(24))
+    replies.append(reply)
+result = '。'.join(replies)
 '''},
         'steps': [{
-            'id': 'greet', 'label': '回复招呼',
-            'instructions': '按招呼内容回复；自我介绍使用运行时的本机名称。',
+            'id': 'recognize', 'label': '拆分招呼',
+            'instructions': '按句号、问号、叹号、分号、省略号或换行分段，保留句内逗号，忽略空段。',
             'inputs': {'text': '${inputs.text}'},
+            'execution': {'tool': 'python', 'script': 'scripts/recognize.py'},
+            'outputs': [{'id': 'greeting', 'label': '招呼片段', 'kind': 'value', 'source': 'result', 'dataType': 'array'}],
+            'checks': [], 'onFailure': {'action': 'stop'},
+        }, {
+            'id': 'greet', 'label': '生成回复',
+            'instructions': '按顺序逐段回复暗号、介绍本机或生成随机字符，再用句号连接回复。',
+            'inputs': {'greeting': '${steps.recognize.outputs.greeting}'},
             'execution': {'tool': 'python', 'script': 'scripts/greeting.py'},
-            'outputs': [{'id': 'reply', 'label': '回复', 'kind': 'json', 'path': 'reply.json'}],
+            'outputs': [{'id': 'reply', 'label': '回复', 'kind': 'value', 'source': 'result', 'dataType': 'string'}],
             'checks': [], 'onFailure': {'action': 'stop'},
         }],
         'finalOutputs': ['${steps.greet.outputs.reply}'],

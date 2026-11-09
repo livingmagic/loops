@@ -1146,3 +1146,6 @@ h1 { margin: 0; font-size: 23px; line-height: 1.35; font-weight: 700; letter-spa
 .sharing-unavailable { margin-bottom: 24px; }
 .sharing-past-clients { margin-top: 24px; font-size: 13px; color: #7b899e; }
 .sharing-past-clients summary { cursor: pointer; }
+
+.contract-item { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 10px; }
+.contract-type { flex: none; font-size: 11px; line-height: 1.6; padding: 1px 6px; border-radius: 4px; background: #eaf0f7; color: #61748d; font-weight: 400; }

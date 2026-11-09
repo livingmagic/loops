@@ -135,10 +135,14 @@ def validate(value, config):
         for output in step.get("outputs", []):
             if not IDENTIFIER.fullmatch(output.get("id", "")) or output["id"] in output_ids or not output.get("label"):
                 raise ValueError("步骤产出需要唯一标识和名称。")
+            if 'dataType' in output and output['dataType'] not in ('string', 'object', 'array', 'number', 'boolean', 'null'):
+                raise ValueError('数据类型需要是有效的 JSON 类型。')
             if output.get('kind', 'file') == 'value':
-                pointer = output.get('pointer', '') if tool == 'command' else output.get('pointer')
-                if tool not in {'mcp', 'command'} or not isinstance(pointer, str) or (pointer and not pointer.startswith('/')) or re.search(r'~(?![01])', pointer):
-                    raise ValueError('数据产出只用于 MCP 或命令行；pointer 使用 JSON Pointer。')
+                pointer = output.get('pointer', '') if tool in {'command', 'python'} else output.get('pointer')
+                if tool not in {'mcp', 'command', 'python'} or not isinstance(pointer, str) or (pointer and not pointer.startswith('/')) or re.search(r'~(?![01])', pointer):
+                    raise ValueError('数据产出只用于 MCP、命令行或 Python；pointer 使用 JSON Pointer。')
+                if tool == 'python' and output.get('source') != 'result':
+                    raise ValueError('Python 数据产出需要 source=result，脚本将结果赋给 result。')
                 if tool == 'command' and (output.get('source') != 'stdout' or output.get('format') != 'json'):
                     raise ValueError('命令数据产出需要 source=stdout、format=json。')
             elif output.get('kind', 'file') not in {'file', 'json'} or not isinstance(output.get('path'), str) or not output['path']:
