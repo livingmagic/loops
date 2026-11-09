@@ -25,28 +25,27 @@ function Publish({ loops, flows, enabled, initialId, act, onClose }) {
 }
 
 function Options({ state, act, onClose }) {
-  const [name, setName] = useState(state.config.name), [concurrency, setConcurrency] = useState(state.config.concurrency), [enabled, setEnabled] = useState(state.config.enabled);
-  const [disabledAddresses, setDisabledAddresses] = useState(state.config.disabledAddresses || []);
+  const [name, setName] = useState(state.config.name), [concurrency, setConcurrency] = useState(state.config.concurrency);
+  const [addressOverrides, setAddressOverrides] = useState(state.config.addressOverrides || {});
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [copied, setCopied] = useState('');
   return <SharingDialog title="共享设置" onClose={onClose}><form className="sharing-form" onSubmit={async event => {
     event.preventDefault(); setBusy(true);
-    try { await act('sharing_settings', { name, concurrency: Number(concurrency), enabled, disabledAddresses }); onClose(); }
+    try { await act('sharing_settings', { name, concurrency: Number(concurrency), addressOverrides }); onClose(); }
     catch (e) { setError(e.message); } finally { setBusy(false); }
   }}>
     <label>本机名称<input required maxLength={80} value={name} onChange={event => setName(event.target.value)} /></label>
     <label>最大并发任务数<input type="number" min="1" max="32" required value={concurrency} onChange={event => setConcurrency(event.target.value)} /></label>
-    <label className="sharing-toggle"><input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)} />允许外部连接</label>
-    {!enabled && state.config.enabled && <p className="sharing-note">关闭后停止接受连接，已接受的任务继续执行。</p>}
     <fieldset className="sharing-addresses"><legend>连接地址</legend>
-      {!state.config.port && <p className="sharing-note">开启外部连接并保存后，将生成包含端口的完整地址。</p>}{(state.addressOptions || []).map(item => {
-      const checked = !disabledAddresses.includes(item.ip);
+      {!state.config.port && <p className="sharing-note">开启共享后将生成完整连接地址。</p>}{(state.addressOptions || []).map(item => {
+      const checked = addressOverrides[item.ip] ?? item.enabled;
       return <div className={`sharing-address-row ${checked ? '' : 'disabled'}`} key={item.ip}>
-        <label><input type="checkbox" aria-label={`允许通过 ${item.ip} 连接`} checked={checked} onChange={event => setDisabledAddresses(previous => event.target.checked ? previous.filter(ip => ip !== item.ip) : [...previous, item.ip])} />
+        <label><input type="checkbox" aria-label={`允许通过 ${item.ip} 连接`} checked={checked} onChange={event => { const checked = event.target.checked; setAddressOverrides(previous => ({ ...previous, [item.ip]: checked })); }} />
           <span><code>{item.url || item.ip}</code><small>{[item.source, item.interface, item.active === false ? '未连接' : ''].filter(Boolean).join(' · ')}</small></span>
         </label>
-        <button className="icon-button" type="button" disabled={!checked || !item.url || !enabled} aria-label={`复制 ${item.url || item.ip}`} onClick={async () => { try { await navigator.clipboard.writeText(item.url); setCopied(item.ip); } catch { setError('复制失败，请手动复制地址。'); } }}>{copied === item.ip ? <CheckCircle size={17} /> : <Copy size={17} />}</button>
+        <button className="icon-button" type="button" disabled={!checked || !item.url || !state.online} aria-label={`复制 ${item.url || item.ip}`} onClick={async () => { try { await navigator.clipboard.writeText(item.url); setCopied(item.ip); } catch { setError('复制失败，请手动复制地址。'); } }}>{copied === item.ip ? <CheckCircle size={17} /> : <Copy size={17} />}</button>
       </div>;
     })}</fieldset>
+    {state.error && <p className={state.online ? 'sharing-note' : 'form-error'} role={state.online ? 'status' : 'alert'}>{state.error}</p>}
     {error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>取消</button><button className="button button-primary" disabled={busy}>保存</button></div>
   </form></SharingDialog>;
 }
@@ -123,11 +122,11 @@ export function Sharing({ loops }) {
 
   return <main className="workspace sharing-workspace">
     <header className="topbar sharing-topbar">
-      <div className="sharing-heading"><h1>共享</h1>{state && tab !== 'connections' && <span className={`sharing-availability ${state.online ? 'online' : ''}`}><i />{state.online ? '已开启' : '未开启'}</span>}</div>
+      <div className="sharing-heading"><h1>共享</h1>{tab !== 'connections' && <button type="button" className="sharing-switch" role="switch" aria-label="共享" aria-checked={Boolean(state?.online)} disabled={!state || working} onClick={() => perform('sharing_settings', { enabled: !state.online })}><span aria-hidden="true" /></button>}</div>
       <div className="toolbar-actions">
-        {tab !== 'connections' && <button className="button button-secondary" disabled={!state} onClick={() => setModal('settings')}><Gear size={17} />共享设置</button>}
+        {tab !== 'connections' && <button className="button button-secondary" disabled={!state || working} onClick={() => setModal('settings')}><Gear size={17} />共享设置</button>}
         {tab === 'connections' && shared.peers.length > 0 && <button className="button button-primary" onClick={() => setModal('connect')}><Plus size={18} />连接 Loops 客户端</button>}
-        {showPublish && <button className="button button-primary" onClick={() => setModal('publish')}><Plus size={18} />发布流程</button>}
+        {showPublish && <button className="button button-primary" disabled={working} onClick={() => setModal('publish')}><Plus size={18} />发布流程</button>}
       </div>
     </header>
     <div className="sharing-tabs" role="tablist" aria-label="共享管理">
@@ -141,8 +140,7 @@ export function Sharing({ loops }) {
     </div>
     <div className="sharing-body" id="sharing-panel" role="tabpanel" aria-labelledby={`sharing-tab-${tab}`}>
       <div className={`sharing-content ${tab === 'flows' && flows.length ? 'sharing-split-content' : ''}`}>
-        {(error || state?.error) && <p className="form-error" role="alert">{error || state.error}</p>}
-        {state && tab !== 'connections' && !state.online && flows.length > 0 && <div className="sharing-service-notice"><span>共享未开启，已发布流程暂不可调用。</span><button className="button button-secondary" disabled={working} onClick={() => perform('sharing_settings', { enabled: true })}>开启共享</button></div>}
+        {error && <p className="form-error" role="alert">{error}</p>}
         {!state && <p className="sharing-loading"><SpinnerGap className="spinning" size={18} />正在读取…</p>}
         {state && tab === 'flows' && (flows.length ? <div className="sharing-split">
           <nav className="sharing-flow-list" aria-label="共享流程">

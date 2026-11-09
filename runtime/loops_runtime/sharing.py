@@ -4,7 +4,6 @@ import base64
 import hashlib
 import ipaddress
 import json
-import os
 import secrets
 import socket
 import sys
@@ -13,7 +12,7 @@ import tempfile
 from pathlib import Path
 
 from .definition import declared_outputs
-from .sharing_network import Discovery, MAX_BODY, certificate, discover, local_addresses, local_interfaces, pairing_code, request
+from .sharing_network import Discovery, MAX_BODY, certificate, discover, file_index, local_interfaces, pairing_code, pairing_result, peer_path, request, save_peer, sharing_addresses
 from .store import ACTIVE, now, uid
 from .workflow import create_run
 
@@ -26,7 +25,8 @@ class Sharing:
         store.db.execute('CREATE TABLE IF NOT EXISTS sharing (kind TEXT, id TEXT, data TEXT NOT NULL, PRIMARY KEY(kind,id))')
         store.db.commit()
         self.config = self.get('config', 'local') or {'id': uid('host'), 'name': socket.gethostname().split('.')[0], 'enabled': False, 'concurrency': 2, 'port': 0}
-        self.config.setdefault('disabledAddresses', [])
+        self.config.setdefault('addressOverrides', {ip: False for ip in self.config.get('disabledAddresses', [])})
+        self.config.pop('disabledAddresses', None)
         self.put('config', 'local', self.config)
         self.server = self.server_task = self.discovery = self.worker = None
         self.listening_addresses = set()
@@ -63,6 +63,9 @@ class Sharing:
     def identity(self):
         return {'id': self.config['id'], 'name': self.config['name'], 'port': self.config['port'], 'protocol': 'loops-sharing-v1'}
 
+    def allowed_addresses(self):
+        return sharing_addresses(local_interfaces(), self.config['addressOverrides'])
+
     async def startup(self):
         if self.closing:
             return
@@ -73,7 +76,7 @@ class Sharing:
         async with self.start_lock:
             if self.closing:
                 return
-            addresses = local_addresses() - set(self.config['disabledAddresses'])
+            addresses = self.allowed_addresses()
             if self.server_task and not self.server_task.done() and addresses == self.listening_addresses:
                 return
             await self.stop_server()
@@ -137,7 +140,7 @@ class Sharing:
     def check_address(self, http):
         # Use the transport destination, never the caller-controlled Host / forwarded headers.
         address = http.scope.get('server', (None, None))[0]
-        if not self.config['enabled'] or address not in self.listening_addresses or address in self.config['disabledAddresses']:
+        if not self.config['enabled'] or address not in self.listening_addresses or self.config['addressOverrides'].get(address) is False:
             raise PermissionError('此地址已停止接受共享连接。')
 
     def authenticate(self, authorization):
@@ -416,8 +419,9 @@ class Sharing:
         for client in clients:
             self.expire_client(client)
         interfaces = local_interfaces()
+        allowed = sharing_addresses(interfaces, self.config['addressOverrides'])
         port = self.config['port']
-        options = [{**item, 'url': f'https://{item["ip"]}:{port}' if port else None, 'enabled': item['ip'] not in self.config['disabledAddresses']} for item in interfaces]
+        options = [{**item, 'url': f'https://{item["ip"]}:{port}' if port else None, 'enabled': item['ip'] in allowed} for item in interfaces]
         return {'config': self.config, 'online': bool(self.server and self.server.started and self.server_task and not self.server_task.done()), 'error': self.error,
                 'addresses': [item['url'] for item in options if item['url'] and item['enabled']], 'addressOptions': options,
                 'pastFlows': list({job['loopId']: {'id': job['loopId'], 'name': job['name'], 'revision': job['revision']} for job in self.rows('task')}.values()),
@@ -428,19 +432,13 @@ class Sharing:
         return sorted([{k: v for k, v in json.loads(file.read_text()).items() if k != 'token'} for file in (self.directory / 'peers').glob('*.json')], key=lambda peer: peer.get('createdAt', ''))
 
     def peer(self, peer_id):
-        if not isinstance(peer_id, str) or not peer_id.startswith('peer-') or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789-' for c in peer_id):
+        peer = json.loads(peer_path(self.directory / 'peers', peer_id).read_text())
+        if peer.get('id') != peer_id:
             raise ValueError('连接标识无效。')
-        return json.loads((self.directory / 'peers' / f'{peer_id}.json').read_text())
+        return peer
 
     def save_peer(self, peer):
-        directory = self.directory / 'peers'
-        directory.mkdir(mode=0o700, exist_ok=True)
-        target = directory / f'{peer["id"]}.json'
-        temporary = target.with_suffix('.tmp')
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, 'w') as output:
-            json.dump(peer, output)
-        os.replace(temporary, target)
+        save_peer(self.directory / 'peers', peer)
 
     async def remote(self, peer, method, params=None, **kwargs):
         return await asyncio.to_thread(request, peer['address'], method, params, token=peer['token'], fingerprint=peer['fingerprint'], **kwargs)
@@ -477,17 +475,17 @@ class Sharing:
             name = params.get('name', self.config['name'])
             if type(concurrency) is not int or not 1 <= concurrency <= 32 or not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
                 raise ValueError('请填写名称，并设置 1 到 32 的并发数。')
-            disabled = params.get('disabledAddresses', self.config['disabledAddresses'])
-            if not isinstance(disabled, list) or len(disabled) > 256 or any(not isinstance(item, str) for item in disabled):
+            overrides = params.get('addressOverrides', self.config['addressOverrides'])
+            if not isinstance(overrides, dict) or len(overrides) > 256 or any(not isinstance(ip, str) or type(value) is not bool for ip, value in overrides.items()):
                 raise ValueError('连接地址设置无效。')
             try:
-                disabled = sorted({str(ipaddress.IPv4Address(item)) for item in disabled})
+                overrides = {str(ipaddress.IPv4Address(ip)): value for ip, value in overrides.items()}
             except ValueError:
                 raise ValueError('连接地址设置无效。') from None
             enabled = params.get('enabled', self.config['enabled']) is True
-            if enabled and not local_addresses() - set(disabled):
+            if enabled and not sharing_addresses(local_interfaces(), overrides):
                 raise ValueError('请至少启用一个连接地址，或关闭外部连接。')
-            self.config.update(name=name.strip(), concurrency=concurrency, enabled=enabled, disabledAddresses=disabled)
+            self.config.update(name=name.strip(), concurrency=concurrency, enabled=enabled, addressOverrides=overrides)
             self.put('config', 'local', self.config)
             if self.config['enabled']:
                 await self.startup()
@@ -496,7 +494,7 @@ class Sharing:
         elif method == 'sharing_publish':
             loop = self.store.get(params['loopId'])
             snapshot = self.store.version(loop['id'], params.get('revision', loop['savedRevision']))
-            if params.get('enableSharing') is True and not local_addresses() - set(self.config['disabledAddresses']):
+            if params.get('enableSharing') is True and not self.allowed_addresses():
                 raise ValueError('请先在共享设置中启用至少一个连接地址。')
             self.put('publication', loop['id'], {'id': loop['id'], 'name': snapshot['title'], 'revision': snapshot['revision'], 'enabled': True})
             if params.get('enableSharing') is True:
@@ -543,7 +541,7 @@ class Sharing:
                 raise ValueError('找不到任务。')
             self.cancel(job)
         elif method == 'sharing_discover':
-            return [item for item in await discover() if item['id'] != self.config['id']]
+            return [item for item in await discover(addresses=self.allowed_addresses()) if item['id'] != self.config['id']]
         elif method == 'sharing_connect':
             async with self.connect_lock:
                 identity = await asyncio.to_thread(request, params['address'], 'identity')
@@ -555,14 +553,14 @@ class Sharing:
                     raise ValueError('对方身份已变化，无法复用原连接。')
                 peer.update(name=identity['name'], address=params['address'])
                 response = await self.remote(peer, 'pair', {'token': peer['token'], 'name': self.config['name'], 'retry': True})
-                peer.update(response, online=True)
+                peer.update(pairing_result(peer, response))
                 self.save_peer(peer)
                 self.changed()
                 return {**self.state(), 'connectedPeerId': peer['id']}
         elif method == 'sharing_reapply':
             peer = self.peer(params['peerId'])
             response = await self.remote(peer, 'pair', {'token': peer['token'], 'name': self.config['name'], 'retry': True})
-            peer.update(response, online=True)
+            peer.update(pairing_result(peer, response))
             self.save_peer(peer)
         elif method == 'sharing_refresh_peer':
             peer = self.peer(params['peerId'])
@@ -582,16 +580,22 @@ class Sharing:
         elif method in {'sharing_peer_task', 'sharing_peer_cancel'}:
             return await self.remote(self.peer(params['peerId']), 'task' if method.endswith('task') else 'cancel', {'taskId': params['taskId']})
         elif method == 'sharing_download':
+            index = file_index(params.get('index'))
             peer = self.peer(params['peerId'])
             job = await self.remote(peer, 'task', {'taskId': params['taskId']})
-            item = next(item for item in job['files'] if item['index'] == params['index'])
-            directory = self.directory / 'downloads' / peer['id'] / hashlib.sha256(job['id'].encode()).hexdigest()[:20] / str(item['index'])
-            directory.mkdir(parents=True, exist_ok=True)
+            item = next((item for item in job['files'] if file_index(item.get('index')) == index), None)
+            if item is None:
+                raise ValueError('找不到产出文件。')
+            root = (self.directory / 'downloads').resolve()
+            directory = root / peer['id'] / hashlib.sha256(job['id'].encode()).hexdigest()[:20] / str(index)
             filename = Path(item['name']).name
             if filename in {'', '.', '..'}:
                 raise ValueError('产出文件名称无效。')
             target = directory / filename
-            return await self.remote(peer, 'file', {'taskId': job['id'], 'index': item['index']}, download=target)
+            if not target.resolve().is_relative_to(root):
+                raise ValueError('产出文件路径无效。')
+            directory.mkdir(parents=True, exist_ok=True)
+            return await self.remote(peer, 'file', {'taskId': job['id'], 'index': index}, download=target)
         elif method == 'sharing_peer_config':
             peer = self.peer(params['peerId'])
             script = str(Path(__file__).with_name('sharing_client.py'))

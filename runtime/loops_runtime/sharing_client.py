@@ -7,24 +7,41 @@ import fcntl
 import os
 from pathlib import Path
 import secrets
+import sqlite3
 import sys
 import time
 
 # The absolute script entry point also works with connectors' isolated cwd/env.
 if __package__ in {None, ''}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from loops_runtime.sharing_network import discover, request
+from loops_runtime.sharing_network import discover, file_index, local_interfaces, pairing_result, peer_path, request, save_peer, sharing_addresses
 from loops_runtime.store import now
 
 
 def read_peer(directory, peer_id):
-    if not peer_id or not peer_id.startswith('peer-') or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789-' for c in peer_id):
+    peer = json.loads(peer_path(directory / 'sharing' / 'peers', peer_id).read_text())
+    if peer.get('id') != peer_id:
         raise ValueError('请提供有效的 --peer 连接标识。')
-    return json.loads((directory / 'sharing' / 'peers' / f'{peer_id}.json').read_text())
+    return peer
 
 
 def call(peer, method, params=None, **kwargs):
     return request(peer['address'], method, params, token=peer['token'], fingerprint=peer['fingerprint'], **kwargs)
+
+
+def discovery_addresses(directory):
+    overrides = {}
+    database = directory / 'loops.sqlite3'
+    if database.exists():
+        connection = sqlite3.connect(database.as_uri() + '?mode=ro', uri=True)
+        try:
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sharing'").fetchone():
+                row = connection.execute("SELECT data FROM sharing WHERE kind='config' AND id='local'").fetchone()
+                config = json.loads(row[0]) if row else {}
+                overrides = config.get('addressOverrides', {ip: False for ip in config.get('disabledAddresses', [])})
+        finally:
+            connection.close()
+    return sharing_addresses(local_interfaces(), overrides)
 
 
 def mcp_server(peer, directory):
@@ -57,10 +74,13 @@ def mcp_server(peer, directory):
     @server.tool(annotations=write)
     async def download_file(task_id: str, index: int) -> dict:
         """Download a task output to this client's local downloads directory. Returns the local file path."""
+        index = file_index(index)
         folder = directory / 'sharing' / 'downloads' / peer['id']
         folder.mkdir(parents=True, exist_ok=True)
         import hashlib
         target = folder / (hashlib.sha256(task_id.encode()).hexdigest()[:20] + f'-{index}')
+        if not target.resolve().is_relative_to((directory / 'sharing' / 'downloads').resolve()):
+            raise ValueError('产出文件路径无效。')
         return await asyncio.to_thread(call, peer, 'file', {'taskId': task_id, 'index': index}, download=target)
 
     server.run(transport='stdio')
@@ -93,7 +113,7 @@ def main():
     args = parser.parse_args()
     directory = args.data_dir.expanduser().resolve()
     if args.command == 'discover':
-        result = asyncio.run(discover())
+        result = asyncio.run(discover(addresses=discovery_addresses(directory)))
     elif args.command == 'connect':
         folder = directory / 'sharing' / 'peers'
         folder.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -106,13 +126,9 @@ def main():
                 raise ValueError('对方身份已变化，无法复用原连接。')
             peer = peer or {'id': 'peer-' + secrets.token_hex(6), 'hostId': identity['id'], 'fingerprint': identity['fingerprint'], 'token': secrets.token_urlsafe(32), 'createdAt': now()}
             peer.update(name=identity['name'], address=args.address)
-            peer.update(call(peer, 'pair', {'name': args.name, 'token': peer['token'], 'retry': True}), online=True)
-            target = folder / f'{peer["id"]}.json'
-            temporary = target.with_suffix('.connect.tmp')
-            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, 'w') as output:
-                json.dump(peer, output)
-            os.replace(temporary, target)
+            response = call(peer, 'pair', {'name': args.name, 'token': peer['token'], 'retry': True})
+            peer.update(pairing_result(peer, response))
+            save_peer(folder, peer)
         result = {'peer': peer['id'], 'status': peer['status'], 'code': peer['code'], 'message': '连接已授权。' if peer['status'] == 'approved' else '请在对方 Loops 核对配对码并同意连接。'}
 
     else:

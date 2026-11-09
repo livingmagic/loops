@@ -3,9 +3,9 @@ import json
 import socket
 import struct
 import unittest
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
-from loops_runtime.sharing_network import DISCOVERY_PORT, GROUP, Discovery, _discover_on_interface, discover, local_interfaces
+from loops_runtime.sharing_network import DISCOVERY_PORT, GROUP, Discovery, _discover_on_interface, discover, local_interfaces, sharing_addresses
 
 
 class SharingNetworkTests(unittest.TestCase):
@@ -16,6 +16,9 @@ class SharingNetworkTests(unittest.TestCase):
             'bridge2': ('192.168.20.1', 0x41, 2, 1),
             'utun9': ('10.20.30.1', 0x51, 0, None),
             'en9': ('192.168.30.8', 0x41, 2, 3),
+            'awdl0': ('169.254.1.2', 0x41, 4, 3),
+            'pdp_ip0': ('10.30.0.1', 0x41, 5, 3),
+            'other0': ('10.40.0.1', 0x41, 0, None),
         }
         def ioctl(fd, operation, query):
             name = query[:16].split(b'\0')[0].decode()
@@ -47,6 +50,9 @@ class SharingNetworkTests(unittest.TestCase):
         self.assertFalse(items['bridge2']['active'])
         self.assertEqual(items['utun9']['source'], '隧道接口')
         self.assertEqual(items['lo0']['source'], '本机')
+        self.assertEqual(sharing_addresses(items.values()), {'127.0.0.1', '192.168.10.8', '192.168.30.8'})
+        self.assertEqual(items['bridge2']['kind'], 'bridge')
+        self.assertEqual(items['other0']['kind'], 'unknown')
 
     def test_discovery_does_not_advertise_a_disabled_return_address(self):
         allowed = {'127.0.0.1'}
@@ -64,7 +70,7 @@ class SharingNetworkTests(unittest.TestCase):
 class DiscoveryInterfaceTests(unittest.IsolatedAsyncioTestCase):
     async def test_listener_joins_each_enabled_active_interface_despite_one_failure(self):
         interfaces = [
-            {'ip': '127.0.0.1', 'active': True},
+            {'ip': '127.0.0.1', 'active': True, 'kind': 'local'},
             {'ip': '198.18.0.1', 'active': True},
             {'ip': '192.168.1.8', 'active': True},
             {'ip': '192.168.2.8', 'active': True},
@@ -94,7 +100,7 @@ class DiscoveryInterfaceTests(unittest.IsolatedAsyncioTestCase):
             if level == socket.IPPROTO_IP and option == socket.IP_ADD_MEMBERSHIP:
                 raise OSError('Permission denied')
         sock.setsockopt.side_effect = reject_membership
-        with patch('socket.socket', return_value=sock), patch('loops_runtime.sharing_network.local_interfaces', return_value=[{'ip': '127.0.0.1', 'active': True}]):
+        with patch('socket.socket', return_value=sock), patch('loops_runtime.sharing_network.local_interfaces', return_value=[{'ip': '127.0.0.1', 'active': True, 'kind': 'local'}]):
             with self.assertRaises(OSError):
                 await Discovery(lambda: {}, lambda: {'127.0.0.1'}).start()
         sock.close.assert_called_once()
@@ -143,7 +149,7 @@ class DiscoveryInterfaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(found[0]['id'], 'remote')
 
     async def test_scan_survives_failed_adapter_deduplicates_and_skips_inactive(self):
-        interfaces = [{'ip': ip, 'active': active} for ip, active in [
+        interfaces = [{'ip': ip, 'active': active, 'kind': 'ethernet'} for ip, active in [
             ('127.0.0.1', True), ('198.18.0.1', True), ('192.168.1.8', True), ('192.168.2.8', False)]]
         async def scan(ip, timeout, broadcast):
             if ip == '198.18.0.1':
@@ -155,9 +161,29 @@ class DiscoveryInterfaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(found, [{'id': 'host', 'address': 'https://127.0.0.1:4567'}])
 
     async def test_all_failed_adapters_report_error_instead_of_empty_results(self):
-        with patch('loops_runtime.sharing_network.local_interfaces', return_value=[{'ip': '127.0.0.1', 'active': True}]), patch('loops_runtime.sharing_network._discover_on_interface', side_effect=OSError('Permission denied')):
+        with patch('loops_runtime.sharing_network.local_interfaces', return_value=[{'ip': '127.0.0.1', 'active': True, 'kind': 'local'}]), patch('loops_runtime.sharing_network._discover_on_interface', side_effect=OSError('Permission denied')):
             with self.assertRaisesRegex(ConnectionError, '本地网络权限'):
                 await discover()
+
+
+class DiscoverySelectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_default_scan_excludes_tunnels_bridges_and_unknown_interfaces(self):
+        interfaces = [{'ip': ip, 'kind': kind, 'active': True} for ip, kind in (
+            ('127.0.0.1', 'local'), ('192.168.1.2', 'wifi'), ('192.168.2.2', 'ethernet'),
+            ('10.0.0.2', 'tunnel'), ('10.1.0.2', 'bridge'), ('10.2.0.2', 'unknown'))]
+        scan = AsyncMock(return_value=[{'id': 'same-peer'}])
+        with patch('loops_runtime.sharing_network.local_interfaces', return_value=interfaces), patch('loops_runtime.sharing_network._discover_on_interface', scan):
+            self.assertEqual(await discover(), [{'id': 'same-peer'}])
+        self.assertEqual(scan.await_args_list, [call(ip, 2, None) for ip in ('127.0.0.1', '192.168.1.2', '192.168.2.2')])
+
+    async def test_manual_scan_selection_and_empty_selection(self):
+        scan = AsyncMock(return_value=[])
+        with patch('loops_runtime.sharing_network.local_interfaces', return_value=[{'ip': '10.0.0.2', 'kind': 'tunnel', 'active': True}]), patch('loops_runtime.sharing_network._discover_on_interface', scan):
+            await discover(addresses={'10.0.0.2'})
+            scan.assert_awaited_once_with('10.0.0.2', 2, None)
+            scan.reset_mock()
+            await discover(addresses=set())
+            scan.assert_not_called()
 
 
 if __name__ == '__main__':

@@ -2,6 +2,7 @@
 import asyncio
 import errno
 import hashlib
+import hmac
 import http.client
 import json
 import os
@@ -20,7 +21,7 @@ MAX_BODY = 15 * 1024 * 1024
 
 def local_interfaces():
     """Read address sources from local interfaces, without DNS or network round trips."""
-    addresses = {'127.0.0.1': {'ip': '127.0.0.1', 'interface': '', 'source': '本机', 'active': True}}
+    addresses = {'127.0.0.1': {'ip': '127.0.0.1', 'interface': '', 'kind': 'local', 'source': '本机', 'active': True}}
     # SIOCGIFADDR from Darwin sys/sockio.h and Linux linux/sockios.h.
     operation = {'darwin': 0xc0206921, 'linux': 0x8915}.get(sys.platform)
     if operation is None:
@@ -45,20 +46,22 @@ def local_interfaces():
                         return None
                 flags = read(0xc0206911 if sys.platform == 'darwin' else 0x8913, fmt='H')
                 functional = read(0xc02069ad) if sys.platform == 'darwin' else None
-                source = {2: '以太网', 3: 'Wi-Fi', 4: '点对点 Wi-Fi', 5: '蜂窝网络'}.get(functional, '网络接口')
+                kind = {2: 'ethernet', 3: 'wifi', 4: 'peer-to-peer', 5: 'cellular'}.get(functional, 'unknown')
                 if flags is not None and flags & 0x8:
-                    source = '本机'
+                    kind = 'local'
                 elif flags is not None and flags & 0x10:
-                    source = '隧道接口'
+                    kind = 'tunnel'
                 elif sys.platform == 'darwin' and name.startswith('bridge'):
-                    source = '网桥'
+                    kind = 'bridge'
+                source = {'local': '本机', 'ethernet': '以太网', 'wifi': 'Wi-Fi', 'peer-to-peer': '点对点 Wi-Fi',
+                          'cellular': '蜂窝网络', 'tunnel': '隧道接口', 'bridge': '网桥', 'unknown': '网络接口'}[kind]
                 active = bool(flags & 1) if flags is not None else None
                 if sys.platform == 'darwin':
                     # Darwin's packed ifmediareq is 44 bytes; IFM_AVALID / IFM_ACTIVE.
                     media = read(0xc02c6938, offset=24)
                     if media is not None and media & 1:
                         active = bool(media & 2)
-                item = {'ip': address, 'interface': name, 'source': source, 'active': active}
+                item = {'ip': address, 'interface': name, 'kind': kind, 'source': source, 'active': active}
                 if flags is not None and flags & 0x2:  # IFF_BROADCAST; never probe an IP range.
                     broadcast = read(0xc0206923 if sys.platform == 'darwin' else 0x8919, offset=20, fmt='4s')
                     if broadcast and broadcast != bytes(4):
@@ -69,8 +72,10 @@ def local_interfaces():
     return sorted(addresses.values(), key=lambda item: (item['source'] != '本机', item['active'] is False, item['ip']))
 
 
-def local_addresses():
-    return {item['ip'] for item in local_interfaces()}
+def sharing_addresses(interfaces, overrides=None):
+    overrides = overrides or {}
+    return {item['ip'] for item in interfaces
+            if overrides.get(item['ip'], item.get('kind') in {'local', 'wifi', 'ethernet'})}
 
 
 def certificate(directory, name):
@@ -100,7 +105,51 @@ def pairing_code(fingerprint, token):
     return value[:4] + '-' + value[4:]
 
 
+def pairing_result(peer, response):
+    """Bind approval to our TLS pin and token, never to a peer-supplied code."""
+    code = pairing_code(peer['fingerprint'], peer['token'])
+    if (not isinstance(response, dict)
+            or not isinstance(response.get('status'), str)
+            or response.get('status') not in {'pending', 'approved', 'rejected', 'revoked', 'expired'}
+            or not isinstance(response.get('code'), str)
+            or not hmac.compare_digest(response['code'].encode(), code.encode())):
+        raise ValueError('配对身份校验失败，请确认连接地址并重新核对配对码。')
+    return {'status': response['status'], 'code': code, 'online': True}
+
+
+def peer_path(directory, peer_id):
+    if (not isinstance(peer_id, str) or not peer_id.startswith('peer-')
+            or len(peer_id) <= 5 or len(peer_id) > 128
+            or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789-' for c in peer_id)):
+        raise ValueError('连接标识无效。')
+    target = directory / f'{peer_id}.json'
+    if not target.resolve().is_relative_to(directory.resolve()):
+        raise ValueError('连接配置路径无效。')
+    return target
+
+
+def save_peer(directory, peer):
+    target = peer_path(directory, peer['id'])
+    directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix='.peer-', dir=directory)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, 'w') as output:
+            json.dump(peer, output)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def file_index(value):
+    if type(value) is not int or not 0 <= value <= 2**31 - 1:
+        raise ValueError('产出文件索引无效。')
+    return value
+
+
 def request(address, method, params=None, *, token=None, fingerprint=None, download=None):
+    if download is not None:
+        file_index(params['index'])
     url = urlsplit(address)
     if url.scheme != 'https' or not url.hostname or url.username or url.password or url.path not in {'', '/'} or url.query or url.fragment:
         raise ValueError('请输入 https://主机:端口 格式的 Loops 地址。')
@@ -257,8 +306,12 @@ async def _discover_on_interface(ip, timeout, broadcast=None):
     return list(found.values())
 
 
-async def discover(timeout=2):
-    interfaces = [item for item in local_interfaces() if item['active'] is not False]
+async def discover(timeout=2, *, addresses=None):
+    interfaces = local_interfaces()
+    selected = sharing_addresses(interfaces) if addresses is None else addresses
+    if not selected:
+        return []
+    interfaces = [item for item in interfaces if item['active'] is not False and item['ip'] in selected]
     results = await asyncio.gather(*(_discover_on_interface(item['ip'], timeout, item.get('broadcast')) for item in interfaces),
                                    return_exceptions=True)
     found = {}
