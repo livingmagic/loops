@@ -128,11 +128,11 @@ export class Host extends EventEmitter {
       const peerId = params.peerId;
       if (this.sharedPluginJobs.has(peerId)) return this.sharedPluginJobs.get(peerId);
       const job = (async () => {
+        const existing = (await this.engine.call('connector_list')).find(item => item.manifest.id === `shared-${peerId}`);
+        if (existing) return existing;
         const state = await this.engine.call('sharing_refresh_peer', { peerId });
         if (!state.peers.some(peer => peer.id === peerId && peer.status === 'approved')) throw new Error('请先在对方 Loops 同意连接。');
         const manifest = await this.engine.call('sharing_peer_config', { peerId });
-        const existing = (await this.engine.call('connector_list')).find(item => item.manifest.id === manifest.id);
-        if (existing) return existing;
         await this.engine.call('connector_save', { manifest });
         return this.engine.call('connector_connect', { connectorId: manifest.id });
       })().finally(() => this.sharedPluginJobs.delete(peerId));

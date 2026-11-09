@@ -1,6 +1,10 @@
+import { requestError } from './request-error.js';
 export const native = Boolean(window.loops);
 export async function request(method, params = {}) {
-  if (native) return window.loops.request(method, params);
+  if (native) {
+    try { return await window.loops.request(method, params); }
+    catch (error) { throw requestError(error); }
+  }
   const response = await fetch('/api/action', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Loops-Client': 'desktop-development' }, body: JSON.stringify({ method, params }) });
   const value = await response.json();
   if (value.error) throw new Error(value.error);

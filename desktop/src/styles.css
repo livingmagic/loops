@@ -993,7 +993,7 @@ h1 { margin: 0; font-size: 23px; line-height: 1.35; font-weight: 700; letter-spa
 .loop-load-error { padding: 12px 14px; color: #b42318; font-size: 13px; overflow-wrap: anywhere; }
 .loop-load-error p { margin: 0 0 6px; }
 
-/* Shared workflows and the Loops client plugin use the existing app controls. */
+/* Shared workflows and client connections use the existing app controls. */
 .sharing-workspace { min-width: 0; }
 .sharing-topbar { min-height: 86px; height: 86px; padding: 0 38px; align-items: center; border-bottom: 0; }
 .sharing-topbar h1 { margin: 0; font-size: 24px; font-weight: 650; letter-spacing: -.6px; }
@@ -1067,8 +1067,6 @@ h1 { margin: 0; font-size: 23px; line-height: 1.35; font-weight: 700; letter-spa
 .sharing-workspace .text-button, .sharing-dialog .text-button { border: 0; background: transparent; color: #6f7f96; padding: 7px 4px; border-radius: 5px; font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
 .sharing-workspace .text-button:hover, .sharing-dialog .text-button:hover { color: #326feb; background: #f1f5fc; }
 .sharing-workspace .text-button:disabled, .sharing-dialog .text-button:disabled { opacity: .6; cursor: default; }
-.shared-client-card .connector-description { overflow-wrap: anywhere; }
-.shared-client-card .sharing-code { margin-left: 8px; }
 .shared-client-details { padding: 24px 26px; display: grid; gap: 20px; overflow: auto; }
 .shared-client-details .sharing-row { padding-top: 0; }
 .shared-client-address { display: flex; gap: 8px; align-items: center; color: #8a96a7; font-size: 12px; }

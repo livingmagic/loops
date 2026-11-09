@@ -19,7 +19,7 @@ export function ConnectSharedClient({ act, onClose }) {
   }}>
     <div className="sharing-section-title"><h3>附近的 Loops</h3><button type="button" className="text-button" onClick={scan} disabled={scanning}>{scanning ? '搜索中…' : '刷新'}</button></div>
     {nearby.map(peer => <button key={peer.id} type="button" className={`sharing-nearby ${address === peer.address ? 'selected' : ''}`} onClick={() => setAddress(peer.address)}><Globe size={22} /><span>{peer.name}<small>{peer.address}</small></span>{address === peer.address && <CheckCircle size={20} />}</button>)}
-    {!scanning && !nearby.length && <p className="sharing-note">未发现客户端，可填写对方的连接地址。</p>}
+    {!scanning && !nearby.length && <p className="sharing-note">未发现客户端。请在对方「共享设置」开启外部连接，并复制 Wi-Fi 或以太网的完整地址。</p>}
     <label>连接地址<input type="url" required placeholder="https://192.168.1.10:端口" value={address} onChange={event => setAddress(event.target.value)} /></label>
     <p className="sharing-note">发送申请后，在对方 Loops 核对配对码并同意连接。</p>
     {error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>取消</button><button className="button button-primary" disabled={!address || busy}>{busy ? '申请中…' : '申请连接'}</button></div>
@@ -122,9 +122,18 @@ export function useSharedClients(items, refreshPlugins) {
 
   useEffect(() => {
     for (const peer of peers) {
-      if (peer.status !== 'approved' || items.some(item => item.manifest.id === `shared-${peer.id}`) || registration.current.has(peer.id)) continue;
+      if (peer.status !== 'approved' || peer.online === false || items.some(item => item.manifest.id === `shared-${peer.id}`) || registration.current.has(peer.id)) continue;
       registration.current.add(peer.id);
-      request('sharing_add_plugin', { peerId: peer.id }).then(() => refreshPlugins({ invalidate: true })).catch(error => setError(error.message));
+      request('sharing_add_plugin', { peerId: peer.id }).then(() => refreshPlugins({ invalidate: true })).catch(async error => {
+        try {
+          const state = await request('sharing_state');
+          if (state.peers.find(item => item.id === peer.id)?.online === false) {
+            // Retry when polling observes recovery, without a page-level offline error.
+            registration.current.delete(peer.id);
+          } else setError(error.message);
+          setPeers(state.peers);
+        } catch (readError) { setError(readError.message); }
+      });
     }
   }, [peers, items, refreshPlugins]);
 
@@ -140,12 +149,12 @@ export function useSharedClients(items, refreshPlugins) {
 export function SharedClientCard({ peer, plugin, onOpen }) {
   const ready = peer.online !== false && peer.status === 'approved' && plugin?.status === 'connected';
   const status = peer.status === 'approved' && peer.online === false ? '无法连接' : peer.status === 'approved' ? plugin?.enabled === false ? '已停用' : ready ? '已连接' : plugin?.status === 'connecting' ? '连接中' : '已授权' : states[peer.status] || '未连接';
-  return <article className="connector-card shared-client-card">
-    <header><span className="connector-mark"><Globe size={29} /></span><span className={`connector-status ${ready ? 'connected' : 'disconnected'}`}><i />{status}</span></header>
-    <h3>{peer.name}</h3>
-    <p className="connector-description">{peer.status === 'pending' ? <>配对码 <strong className="sharing-code">{peer.code}</strong></> : peer.address}</p>
-    <footer><span className="connector-account">Loops 客户端</span><button className="button button-secondary" onClick={onOpen}>{peer.status === 'pending' ? '查看申请' : '管理'}<ArrowRight size={14} /></button></footer>
-  </article>;
+  return <div className="sharing-row">
+    <span className="sharing-client-icon"><Globe size={21} /></span>
+    <div className="sharing-row-main"><strong>{peer.name}</strong><small>{peer.status === 'pending' ? <>配对码 <span className="sharing-code">{peer.code}</span></> : peer.address}</small></div>
+    <span className={`sharing-status ${ready ? 'online' : ''}`}>{status}</span>
+    <button className="button button-secondary" onClick={onOpen}>{peer.status === 'pending' ? '查看申请' : '管理'}<ArrowRight size={14} /></button>
+  </div>;
 }
 
 export function SharedClientDetails({ peer, plugin, act, refreshPlugins, onClose }) {
@@ -190,7 +199,7 @@ export function SharedClientDetails({ peer, plugin, act, refreshPlugins, onClose
             else await request(enabled ? 'connector_disconnect' : 'connector_connect', { connectorId: plugin.manifest.id });
             await refreshPlugins({ invalidate: true });
           } catch (error) { setError(error.message); } finally { setBusy(false); }
-        }}>{enabled ? '停用插件' : '启用插件'}</button>}
+        }}>{enabled ? '停用自动化调用' : '启用自动化调用'}</button>}
         {['expired', 'rejected', 'revoked', 'unknown'].includes(peer.status) && <button className="button button-secondary" disabled={busy} onClick={async () => {
           setBusy(true); setError('');
           try { await act('sharing_reapply', { peerId: peer.id }); }

@@ -1,5 +1,6 @@
 """LAN discovery and pinned TLS transport for shared workflows."""
 import asyncio
+import errno
 import hashlib
 import http.client
 import json
@@ -57,7 +58,12 @@ def local_interfaces():
                     media = read(0xc02c6938, offset=24)
                     if media is not None and media & 1:
                         active = bool(media & 2)
-                addresses[address] = {'ip': address, 'interface': name, 'source': source, 'active': active}
+                item = {'ip': address, 'interface': name, 'source': source, 'active': active}
+                if flags is not None and flags & 0x2:  # IFF_BROADCAST; never probe an IP range.
+                    broadcast = read(0xc0206923 if sys.platform == 'darwin' else 0x8919, offset=20, fmt='4s')
+                    if broadcast and broadcast != bytes(4):
+                        item['broadcast'] = socket.inet_ntoa(broadcast)
+                addresses[address] = item
     except OSError:
         pass
     return sorted(addresses.values(), key=lambda item: (item['source'] != '本机', item['active'] is False, item['ip']))
@@ -136,6 +142,16 @@ def request(address, method, params=None, *, token=None, fingerprint=None, downl
         if response.status != 200:
             raise ValueError(value.get('error', '共享服务请求失败。'))
         return {**value, 'fingerprint': actual} if method == 'identity' else value
+    except TimeoutError:
+        raise ConnectionError('连接超时，请确认对方 Loops 已开启共享且网络可达。') from None
+    except ssl.SSLError:
+        raise ConnectionError('无法建立安全连接，请确认地址属于 Loops 共享服务。') from None
+    except (ConnectionError, socket.gaierror):
+        raise ConnectionError('无法连接对方 Loops，请确认对方已开启共享，并检查地址和网络。') from None
+    except OSError as error:
+        if error.errno in {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN, errno.EHOSTDOWN}:
+            raise ConnectionError('无法访问对方网络，请检查网络连接和地址。') from None
+        raise
     finally:
         connection.close()
 
@@ -165,8 +181,23 @@ class Discovery(asyncio.DatagramProtocol):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if sys.platform == 'darwin':
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
             sock.bind(('', DISCOVERY_PORT))
-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, socket.inet_aton(GROUP) + socket.inet_aton('0.0.0.0'))
+            joined = False
+            allowed = self.addresses()
+            for item in local_interfaces():
+                if item['active'] is False or item['ip'] not in allowed:
+                    continue
+                try:
+                    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                                    socket.inet_aton(GROUP) + socket.inet_aton(item['ip']))
+                    joined = True
+                except OSError:
+                    # A VPN or disappearing adapter must not disable discovery on Wi-Fi.
+                    continue
+            if not joined:
+                raise OSError('没有可用于自动发现的共享地址。')
             sock.setblocking(False)
             await asyncio.get_running_loop().create_datagram_endpoint(lambda: self, sock=sock)
         except BaseException:
@@ -178,24 +209,69 @@ class Discovery(asyncio.DatagramProtocol):
             self.transport.close()
 
 
-async def discover(timeout=1):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setblocking(False)
-    sock.bind(('', 0))
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+async def _discover_on_interface(ip, timeout, broadcast=None):
+    # Bind both the source address and multicast interface; a wildcard socket
+    # otherwise searches only the OS-selected interface (which may be a VPN).
     loop = asyncio.get_running_loop()
     found = {}
-    try:
-        await loop.sock_sendto(sock, b'LOOPS_DISCOVER_V1', (GROUP, DISCOVERY_PORT))
-        deadline = loop.time() + timeout
-        while loop.time() < deadline:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.setblocking(False)
+        sock.bind((ip, 0))
+        async def query():
+            sent = False
             try:
-                data, address = await asyncio.wait_for(loop.sock_recvfrom(sock, 4096), deadline - loop.time())
-                value = json.loads(data)
-                if value.get('protocol') == 'loops-sharing-v1' and isinstance(value.get('id'), str) and type(value.get('port')) is int and 0 < value['port'] < 65536:
-                    found[value['id']] = {**value, 'address': f'https://{address[0]}:{value["port"]}'}
-            except (ValueError, KeyError, asyncio.TimeoutError):
-                continue
-    finally:
-        sock.close()
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(ip))
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+                await loop.sock_sendto(sock, b'LOOPS_DISCOVER_V1', (GROUP, DISCOVERY_PORT))
+                sent = True
+            except OSError:
+                pass
+            if broadcast:
+                # Some Wi-Fi networks drop multicast while allowing subnet broadcasts.
+                # Send one small query to the OS-provided broadcast address, not every host.
+                try:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                    await loop.sock_sendto(sock, b'LOOPS_DISCOVER_V1', (broadcast, DISCOVERY_PORT))
+                    sent = True
+                except OSError:
+                    pass
+            if not sent:
+                raise OSError('无法发送局域网发现请求。')
+
+        started = loop.time()
+        for attempt in range(2):
+            await query()
+            deadline = started + timeout * (attempt + 1) / 2
+            while loop.time() < deadline:
+                try:
+                    data, address = await asyncio.wait_for(loop.sock_recvfrom(sock, 4096), deadline - loop.time())
+                    value = json.loads(data)
+                    if (isinstance(value, dict) and value.get('protocol') == 'loops-sharing-v1'
+                            and isinstance(value.get('id'), str) and value['id']
+                            and type(value.get('port')) is int and 0 < value['port'] < 65536):
+                        found[value['id']] = {**value, 'address': f'https://{address[0]}:{value["port"]}'}
+                except asyncio.TimeoutError:
+                    break
+                except ValueError:
+                    continue
+    return list(found.values())
+
+
+async def discover(timeout=2):
+    interfaces = [item for item in local_interfaces() if item['active'] is not False]
+    results = await asyncio.gather(*(_discover_on_interface(item['ip'], timeout, item.get('broadcast')) for item in interfaces),
+                                   return_exceptions=True)
+    found = {}
+    searched = False
+    for result in results:
+        if isinstance(result, OSError):
+            continue
+        if isinstance(result, BaseException):
+            raise result
+        searched = True
+        for peer in result:
+            # Stable interface order, rather than packet timing, chooses a duplicate's address.
+            found.setdefault(peer['id'], peer)
+    if not searched:
+        raise ConnectionError('无法搜索局域网，请检查网络连接及 Loops 的本地网络权限。')
     return list(found.values())
