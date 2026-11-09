@@ -104,6 +104,31 @@ class SharingTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(peer['token'], json.dumps(self.client.sharing.state()))
         self.assertEqual((self.client.sharing.directory / 'peers' / f"{peer['id']}.json").stat().st_mode & 0o777, 0o600)
 
+    async def test_builtin_greeting_runs_over_authorized_connection_and_tracks_host_rename(self):
+        loop = next(loop for loop in self.host.store.list() if loop.get('builtin') == 'greeting')
+        self.assertEqual(self.host.sharing.catalog(), [])
+        await self.host.handle('sharing_publish', {'loopId': loop['id']})
+        peer, client = await self.connect(False)
+        with self.assertRaisesRegex(ValueError, '同意连接'):
+            await self.submit(peer, loop, value='天王盖地虎')
+        await self.host.handle('sharing_approve', {'clientId': client['id']})
+        self.assertEqual((await self.client.sharing.remote(peer, 'flows'))['flows'][0]['name'], '打个招呼')
+        for index, (text, expected) in enumerate((('天王盖地虎', '小鸡炖蘑菇'), ('你好，我是调用端', '你好，我是发布端'))):
+            job = await self.finish(peer, await self.submit(peer, loop, key=str(index), value=text))
+            self.assertEqual(job['status'], 'success')
+            self.assertEqual(job['outputs']['greet.reply'], expected)
+        await self.host.handle('sharing_settings', {'name': '新的本机名称'})
+        job = await self.finish(peer, await self.submit(peer, loop, key='renamed', value='你好，我是另一台电脑'))
+        self.assertEqual(job['outputs']['greet.reply'], '你好，我是新的本机名称')
+        output = await self.client.handle('sharing_download', {'peerId': peer['id'], 'taskId': job['id'], 'index': 0})
+        self.assertEqual(json.loads(Path(output['path']).read_text()), job['outputs']['greet.reply'])
+        unknown = await self.finish(peer, await self.submit(peer, loop, key='unknown', value='随便说点什么'))
+        self.assertEqual(unknown['status'], 'success')
+        self.assertEqual(len(unknown['outputs']['greet.reply']), 24)
+        for run in self.host.store.get(loop['id'])['runs']:
+            self.assertIn('sharedTask', run)
+        self.assertEqual(self.host.store.get(loop['id'])['messages'], [])
+
     async def test_state_reads_local_interfaces_without_dns(self):
         # A slow or unavailable hostname resolver must never block the IPC event loop.
         with patch('socket.gethostbyname_ex', side_effect=AssertionError('DNS lookup')), patch('socket.getaddrinfo', side_effect=AssertionError('DNS lookup')):
@@ -213,7 +238,14 @@ class SharingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second['items'][-1]['id'], job['id'])
 
     async def test_idempotency_concurrency_revoke_and_ownership(self):
-        loop = await self.build(delay=.4)
+        # Keep the real subprocess running until cancellation, independent of CI speed.
+        gate = self.root / 'release-shared-task'
+        gate.touch()
+        spec = definition()
+        spec['scripts']['scripts/process.py'] = spec['scripts']['scripts/process.py'].replace(
+            'value=c', f'while not Path({str(gate)!r}).exists(): time.sleep(.01)\nvalue=c')
+        loop = await self.build(spec=spec)
+        gate.unlink()
         peer, client = await self.connect()
         jobs = await asyncio.gather(*(self.submit(peer, loop, key=f'job-{i}') for i in range(3)))
         duplicate = await self.submit(peer, loop, key='job-0')
@@ -229,11 +261,16 @@ class SharingTests(unittest.IsolatedAsyncioTestCase):
         await self.host.handle('sharing_approve', {'clientId': self.host.sharing.rows('client')[-1]['id']})
         with self.assertRaisesRegex(ValueError, '无法访问'):
             await self.client.sharing.remote(other, 'task', {'taskId': jobs[0]['id']})
+        queued_ids = [job['id'] for job in self.host.sharing.rows('task') if job['status'] == 'queued']
+        self.assertTrue(queued_ids)
+        active = next(job for job in self.host.sharing.rows('task') if job['status'] == 'running')
         await self.host.handle('sharing_revoke', {'clientId': client['id']})
         with self.assertRaisesRegex(ValueError, '同意连接'):
             await self.client.sharing.remote(peer, 'flows')
-        self.assertEqual(self.host.sharing.get('task', jobs[-1]['id'])['status'], 'stopped')
-        await self.host.handle('sharing_cancel', {'taskId': jobs[0]['id']})
+        for task_id in queued_ids:
+            self.assertEqual(self.host.sharing.get('task', task_id)['status'], 'stopped')
+        self.assertEqual(self.host.sharing.get('task', active['id'])['status'], 'running')
+        await self.host.handle('sharing_cancel', {'taskId': active['id']})
 
     async def test_published_version_and_unpublish_preserve_accepted_tasks(self):
         loop = await self.build(delay=.2)

@@ -5,12 +5,13 @@ import { createPortal } from 'react-dom';
 import { FolderSimple } from '@phosphor-icons/react';
 import { native } from './api.js';
 
-const defaultDirectory = value => !value || ['${workspace}', '${workspace}/', '.', './'].includes(value);
+export const isDefaultDirectory = value => !value || ['${workspace}', '${workspace}/', '.', './'].includes(value);
 
 export function StepDirectory({ value = '', defaultPath, displayValue, home, disabled, onChange }) {
   const tooltipId = useId(), control = useRef(null), tooltip = useRef(null);
   const [anchor, setAnchor] = useState(null), [position, setPosition] = useState({});
   const revealPath = () => {
+    if (isDefaultDirectory(value)) return;
     const rect = control.current.getBoundingClientRect();
     setAnchor({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom });
   };
@@ -26,7 +27,7 @@ export function StepDirectory({ value = '', defaultPath, displayValue, home, dis
     window.addEventListener('scroll', hide, true); window.addEventListener('resize', hide); window.addEventListener('keydown', key);
     return () => { window.removeEventListener('scroll', hide, true); window.removeEventListener('resize', hide); window.removeEventListener('keydown', key); };
   }, [anchor]);
-  const current = defaultDirectory(value) ? '' : value;
+  const current = isDefaultDirectory(value) ? '' : value;
   const [error, setError] = useState(''), [busy, setBusy] = useState(false);
   useEffect(() => { setError(''); }, [current]);
   const apply = async (path) => {
@@ -43,9 +44,9 @@ export function StepDirectory({ value = '', defaultPath, displayValue, home, dis
   return <div className="step-directory">
     <div className="step-directory-heading"><span>工作目录</span>{current && <button type="button" disabled={disabled || busy} onClick={() => apply('')}>恢复默认</button>}</div>
     <div ref={control} className="step-directory-control" onMouseEnter={revealPath} onMouseLeave={() => setAnchor(null)} onFocus={revealPath} onBlur={() => setAnchor(null)}>
-      <PathLink path={label} home={home} className="step-directory-open" tooltip={false} describedBy={anchor ? tooltipId : undefined}>
+      {current && <PathLink path={label} home={home} className="step-directory-open" tooltip={false} describedBy={anchor ? tooltipId : undefined}>
         <FolderSimple size={18} /><span>{pathName(label, home, 2)}</span>
-      </PathLink>
+      </PathLink>}
       <button type="button" className="step-directory-choose" aria-label="选择工作目录" disabled={disabled || busy || !native} onClick={choose}>{busy ? '保存中…' : '选择文件夹'}</button>
     </div>
     {anchor && createPortal(<div ref={tooltip} id={tooltipId} role="tooltip" className="step-directory-tooltip" style={position}>{displayPath(label, home)}</div>, document.body)}

@@ -209,7 +209,9 @@ h1 { margin: 0; font-size: 23px; line-height: 1.35; font-weight: 700; letter-spa
 .markdown-artifact pre { overflow-x: auto; background: #f6f8fb; border-radius: 6px; padding: 12px; white-space: pre-wrap; }
 .step-configuration pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.7 ui-monospace, SFMono-Regular, monospace; margin: 7px 0; color: #304965; }
 .step-configuration small { display: block; color: #586b84; font-size: 14px; line-height: 1.7; margin-top: 3px; }
-.script-link { display: flex; align-items: center; gap: 6px; border: 0; background: none; padding: 6px 0; color: var(--blue); font-size: 16px; }
+.script-link { display: inline-flex; align-items: center; max-width: 100%; gap: 6px; border: 0; background: none; padding: 6px 0; color: var(--blue); font-size: 16px; text-align: left; }
+.script-link-label, .script-link > svg { flex-shrink: 0; white-space: nowrap; }
+.script-link-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .history-section { border-top: 1px solid var(--line); margin-top: 28px; padding-top: 20px; }
 .run-history { margin-top: 15px; display: flex; flex-direction: column; gap: 9px; }
 .history-row { width: 100%; display: flex; align-items: center; gap: 15px; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 16px 13px; min-height: 77px; text-align: left; }

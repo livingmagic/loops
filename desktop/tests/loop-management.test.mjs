@@ -6,14 +6,18 @@ import path from 'node:path';
 import { builderTools } from '../host/agent.mjs';
 import { Host } from '../host/service.mjs';
 
-test('fresh startup creates no Loop or workspace; only a nonempty submitted requirement creates one', async () => {
+test('fresh startup installs the greeting once; only a nonempty requirement creates a user Loop', async () => {
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'loops-create-test-')));
   const host = new Host({ dataDirectory: directory, workspaceRoot: path.join(directory, 'workspaces'), configDirectory: directory });
   try {
-    assert.deepEqual(await host.action('list'), []);
-    assert.equal(await fs.stat(path.join(directory, 'workspaces')).then(() => true, () => false), false);
+    const [greeting] = await host.action('list');
+    assert.equal(greeting.title, '打个招呼');
+    assert.equal(greeting.builtin, 'greeting');
+    assert.equal(greeting.savedRevision, 1);
+    assert.deepEqual(greeting.runs, []);
+    assert.equal(greeting.workdir, path.join(directory, 'workspaces', greeting.id));
     await assert.rejects(host.action('chat', { text: '  ' }), /有效的需求/);
-    assert.deepEqual(await host.action('list'), []);
+    assert.deepEqual(await host.action('list'), [greeting]);
     const result = await host.action('chat', { text: '把销售明细生成经营简报' });
     const [loop] = await host.action('list');
     assert.equal(loop.id, result.loopId);
@@ -41,7 +45,7 @@ test('host deletes and restores a Loop through the real service without losing i
     const file = path.join(loop.workdir, 'keep.txt');
     await fs.writeFile(file, 'preserved');
     await host.action('delete', { loopId: loop.id });
-    assert.deepEqual(await host.action('list'), []);
+    assert.equal((await host.action('list')).some(item => item.id === loop.id), false);
     assert.equal((await host.action('trash'))[0].id, loop.id);
     const restored = await host.action('restore', { loopId: loop.id });
     assert.deepEqual(restored, loop);

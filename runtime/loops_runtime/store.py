@@ -212,6 +212,21 @@ class Store:
         if not any(run.get("revision") == loop["revision"] and run.get("mode") == "trial"
                    and run["status"] == "success" for run in loop["runs"]):
             raise ValueError("当前版本试跑成功后才能保存。")
+        return self._save_version(loop)
+
+    def install_builtin(self, key, definition, input_defaults):
+        existing = next((loop for loop in self.list() + self.list(deleted=True) if loop.get('builtin') == key), None)
+        if existing:
+            return existing
+        definition = validate(definition, {'resources': []})
+        loop = self.new()
+        loop.update(builtin=key, title=definition['title'], definition=definition, revision=1)
+        loop['config']['inputDefaults'] = copy.deepcopy(input_defaults)
+        self.write_draft(loop)
+        # Install the shipped version without inventing a successful trial or running code at startup.
+        return self._save_version(loop)
+
+    def _save_version(self, loop):
         destination = Path(loop["workdir"]) / "versions" / str(loop["revision"])
         destination.mkdir(parents=True, exist_ok=False)
         snapshot = {"revision": loop["revision"], "title": loop["title"], "definition": loop["definition"], "config": loop["config"], "savedAt": now()}
