@@ -193,3 +193,45 @@ test('legacy entries edited to another provider survive placeholder cleanup', ()
     assert.equal(manager.config().key, 'test-key');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('connection test uses draft configuration and scoped credentials without saving changes', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loops-model-test-'));
+  let received, fail = false, requests = 0;
+  const server = http.createServer(async (req, res) => {
+    requests++;
+    let body = ''; for await (const part of req) body += part;
+    received = { url: req.url, authorization: req.headers.authorization, body: JSON.parse(body) };
+    if (fail) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'Invalid credential draft-secret', type: 'authentication_error' } }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.end('data: '+JSON.stringify({ id: 'test', choices: [{ index: 0, delta: { role: 'assistant', content: 'OK' }, finish_reason: null }] })+'\n\ndata: '+JSON.stringify({ id: 'test', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })+'\n\ndata: [DONE]\n\n');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
+  const manager = new ModelSettings({ dataDirectory: root, configDirectory: root, encryptSecret: () => 'cipher', decryptSecret: () => 'saved-secret' });
+  try {
+    const saved = manager.save({ provider: 'compatible', name: 'Saved', model: 'saved-model', baseUrl, apiKey: 'saved-secret' }).models[0];
+    const before = fs.readFileSync(manager.file, 'utf8');
+    const draft = { id: saved.id, provider: 'compatible', name: 'Draft', model: 'draft-model', baseUrl: `${baseUrl}/`, apiKey: 'draft-secret' };
+    assert.deepEqual(await manager.testConnection(draft), { success: true });
+    assert.equal(received.body.model, 'draft-model');
+    assert.equal(received.authorization, 'Bearer draft-secret');
+    assert.equal(received.url, '/v1/chat/completions');
+    assert.deepEqual(await manager.testConnection({ ...draft, apiKey: '' }), { success: true });
+    assert.equal(received.authorization, 'Bearer saved-secret');
+    fail = true;
+    await assert.rejects(manager.testConnection(draft), error => error.message.includes('Invalid credential') && !error.message.includes('draft-secret'));
+    assert.equal(requests, 3, 'Failed tests must not retry automatically.');
+    await assert.rejects(manager.testConnection({ ...draft, baseUrl: `${baseUrl}/other`, apiKey: '' }), /API Key/);
+    await assert.rejects(manager.testConnection({ ...draft, baseUrl: 'https://example.com/?key=secret' }), /地址/);
+    await assert.rejects(manager.testConnection({ ...draft, provider: 'unsupported' }), /不支持/);
+    assert.equal(requests, 3);
+    assert.equal(fs.readFileSync(manager.file, 'utf8'), before, 'Testing must not persist drafts, credentials or defaults.');
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

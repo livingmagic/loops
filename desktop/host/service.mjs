@@ -204,6 +204,7 @@ export class Host extends EventEmitter {
     if (['agent_directory', 'agent_selection', 'agent_model_selection', 'step_model_selection'].includes(method) && this.busy.has(params.loopId)) throw new Error('请等 Loops AI 回复结束后再修改节点设置。');
     if (['save', 'restore_version'].includes(method) && this.busy.has(params.loopId)) throw new Error('请等 Loops AI 回复结束或先停止回复，再保存或恢复版本。');
     if (method === 'model_thinking') return this.models.thinking(params.id, params.level);
+    if (method === 'model_test') return this.models.testConnection(params);
     if (method === 'model_save') return this.models.save(params);
     if (method === 'model_default') return this.models.default(params.id);
     if (method === 'model_remove') return this.models.remove(params.id);
