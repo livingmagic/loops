@@ -3,9 +3,23 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
+import { createAssistantMessageEventStream, validateToolCall } from '@earendil-works/pi-ai';
 import { Engine } from '../host/engine.mjs';
-import { converse } from '../host/agent.mjs';
+import { converse, builderTools } from '../host/agent.mjs';
+
+test('builder accepts default sessions and explicit independent contexts in both Agent modes', () => {
+  const tools = builderTools({}, 'test-loop');
+  for (const mode of ['read-only', 'write']) {
+    for (const session of [undefined, 'independent-review']) {
+      const execution = { tool: 'agent', mode, ...(session === undefined ? {} : { session }) };
+      const definition = { schemaVersion: 2, title: '复核', goal: '复核结果', completion: '完成复核',
+        inputs: [], scripts: {}, finalOutputs: [], steps: [{ id: 'review', label: '复核', instructions: '复核结果',
+          inputs: {}, execution, outputs: [], checks: [], onFailure: { action: 'stop', maxAttempts: 0 } }] };
+      const args = validateToolCall(tools, { type: 'toolCall', id: 'definition', name: 'update_loop', arguments: { definition } });
+      assert.deepEqual(args.definition.steps[0].execution, execution);
+    }
+  }
+});
 
 test('Pi tool calling constructs, corrects and saves a versioned flow through the real service (provider test double)', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'loops-agent-test-'));
