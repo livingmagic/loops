@@ -32,8 +32,14 @@ class BuiltinWorkflowTests(unittest.IsolatedAsyncioTestCase):
         await self.service.runner.tasks[run['id']]
         result = self.service.store.run(loop['id'], run['id'])
         self.assertEqual(result['status'], 'success', result.get('reason'))
+        self.assertEqual([step['stepId'] for step in result['stepResults']], ['recognize', 'greet'])
+        self.assertIsInstance(result['stepResults'][0]['outputs']['greeting'], list)
+        self.assertFalse((Path(result['directory']) / 'results').exists())
         reply = result['stepResults'][-1]['outputs']['reply']
-        self.assertEqual(json.loads(Path(result['artifacts'][0]['path']).read_text()), reply)
+        self.assertEqual(result['artifacts'][0]['value'], reply)
+        self.assertNotIn('path', result['artifacts'][0])
+        self.assertEqual(result['stepResults'][-1]['outputFiles'], {})
+        self.assertFalse((Path(result['directory']) / 'workspace/reply.json').exists())
         return reply
 
     async def test_ready_to_publish_without_fake_history_or_automatic_sharing(self):
@@ -57,10 +63,26 @@ class BuiltinWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.reply('你好，我是小王'), '你好，我是测试电脑甲')
         await self.service.handle('sharing_settings', {'name': '测试电脑乙'})
         self.assertEqual(await self.reply('你好，我是Alice Chen'), '你好，我是测试电脑乙')
-        replies = [await self.reply(text) for text in ('', 'hello', '你好，我是', '你好，我是   ', '天王盖地虎！', 'hello')]
+        replies = [await self.reply(text) for text in ('', 'hello', '你好，我是', '你好，我是   ', '无效暗号', 'hello')]
         self.assertTrue(all(isinstance(reply, str) and len(reply) == 24 for reply in replies))
         self.assertEqual(len(set(replies)), len(replies))
         self.assertEqual(self.greeting()['savedRevision'], 1)
+
+    async def test_segments_reply_in_order_and_preserve_commas_in_introductions(self):
+        await self.service.handle('sharing_settings', {'name': '测试电脑'})
+        for text, expected in (
+            ('你好，我是小王。天王盖地虎', '你好，我是测试电脑。小鸡炖蘑菇'),
+            ('天王盖地虎！你好，我是小王？', '小鸡炖蘑菇。你好，我是测试电脑'),
+            (' 你好, 我是Alice Chen ; 天王盖地虎.\n天王盖地虎…', '你好，我是测试电脑。小鸡炖蘑菇。小鸡炖蘑菇'),
+            ('。！？\n天王盖地虎；；', '小鸡炖蘑菇'),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(await self.reply(text), expected)
+        mixed = (await self.reply('天王盖地虎。随便聊聊。你好，我是小王')).split('。')
+        self.assertEqual(mixed[0], '小鸡炖蘑菇')
+        self.assertEqual(len(mixed[1]), 24)
+        self.assertEqual(mixed[2], '你好，我是测试电脑')
+        self.assertEqual(len(await self.reply('。！？；\n')), 24)
 
     async def test_restart_preserves_changes_and_deletion_without_reinstalling(self):
         loop = self.greeting()

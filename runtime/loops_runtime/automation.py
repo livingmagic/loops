@@ -812,6 +812,9 @@ class Automations:
                     path = Path(step['outputFiles'][output_id]) if output_id in step.get('outputFiles', {}) else (
                         Path(result['directory']) / 'results' / step_id / f'{output_id}.json'
                         if output.get('kind') == 'value' else Path(step['outputs'][output_id]))
+                    if output.get('kind') == 'value' and output_id not in step.get('outputFiles', {}):
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text(json.dumps(step['outputs'][output_id], ensure_ascii=False))
                     produced[key] = {"kind": "file", "path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
                 state.update(status="success", outputs=produced, endedAt=now())
                 values.update({f"{current_key}.{k}": v for k, v in produced.items()})

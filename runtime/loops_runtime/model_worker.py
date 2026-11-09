@@ -1,5 +1,6 @@
-"""Run an ordinary workflow script with a private model RPC channel."""
+"""Run a Python workflow script with a private model and data-result channel."""
 import os
+import json
 import runpy
 import signal
 import sys
@@ -25,7 +26,18 @@ def main():
     threading.Thread(target=supervise, daemon=True).start()
     # Preserve ordinary Python script imports and argv, without inherited PYTHONPATH.
     sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])))
-    runpy.run_path(sys.argv[0], run_name='__main__')
+    namespace = runpy.run_path(sys.argv[0], run_name='__main__')
+    if os.environ.get('LOOPS_VALUE_OUTPUT') == '1':
+        if 'result' not in namespace:
+            raise ValueError('Python 数据产出需要将结果赋给 result。')
+        frame = json.dumps({'op': 'output', 'value': namespace['result']}, ensure_ascii=False, allow_nan=False)
+        if len(frame.encode('utf-8')) > 900_000:
+            raise ValueError('Python 数据产出超过 900 KB，请改用文件产出。')
+        loops_ai._channel.write(frame + '\n')
+        loops_ai._channel.flush()
+        response = json.loads(loops_ai._replies.readline())
+        if 'error' in response:
+            raise ValueError(response['error'])
 
 
 if __name__ == '__main__':

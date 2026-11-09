@@ -75,6 +75,21 @@ class AutomationTests(unittest.IsolatedAsyncioTestCase):
         await self.settle(task['id'])
         return self.a.run(accepted['runId'])
 
+    async def test_python_data_output_materializes_only_for_file_delivery(self):
+        loop = next(item for item in self.service.store.list() if item.get('builtin') == 'greeting')
+        spec = copy.deepcopy(self.spec)
+        spec['source'] = {'script': "def sample(ctx):\n    ctx.emit('hello', {'text': ctx.text('天王盖地虎')})\ndef run(ctx):\n    sample(ctx)", 'config': {}, 'lifecycle': 'once'}
+        spec['nodes'] = [{'id': 'first', 'loopId': loop['id'], 'bindings': {'text': 'input.text'}}]
+        spec['outputs'][0]['bindings'] = {'report': 'first.greet.reply'}
+        task = await self.save(spec)
+        await self.a.enable(task['id'], True)
+        result = (await self.settle(task['id']))[-1]
+        self.assertEqual(result['status'], 'success', result)
+        self.assertEqual(json.loads(Path(result['nodes']['delivery']['receipt']['target']).read_text()), '小鸡炖蘑菇')
+        child = self.service.store.get(loop['id'])['runs'][-1]
+        self.assertEqual(child['stepResults'][0]['outputFiles'], {})
+        self.assertNotIn('path', child['artifacts'][0])
+
     async def test_real_source_two_loops_receipt_and_sample_is_not_execution(self):
         task = await self.save()
         sample = await self.service.handle('automation_sample', {'taskId':task['id']})

@@ -113,21 +113,33 @@ class SharingTests(unittest.IsolatedAsyncioTestCase):
             await self.submit(peer, loop, value='天王盖地虎')
         await self.host.handle('sharing_approve', {'clientId': client['id']})
         self.assertEqual((await self.client.sharing.remote(peer, 'flows'))['flows'][0]['name'], '打个招呼')
-        for index, (text, expected) in enumerate((('天王盖地虎', '小鸡炖蘑菇'), ('你好，我是调用端', '你好，我是发布端'))):
+        for index, (text, expected) in enumerate((('天王盖地虎', '小鸡炖蘑菇'), ('你好，我是调用端', '你好，我是发布端'), ('你好，我是调用端。天王盖地虎', '你好，我是发布端。小鸡炖蘑菇'))):
             job = await self.finish(peer, await self.submit(peer, loop, key=str(index), value=text))
             self.assertEqual(job['status'], 'success')
             self.assertEqual(job['outputs']['greet.reply'], expected)
         await self.host.handle('sharing_settings', {'name': '新的本机名称'})
         job = await self.finish(peer, await self.submit(peer, loop, key='renamed', value='你好，我是另一台电脑'))
         self.assertEqual(job['outputs']['greet.reply'], '你好，我是新的本机名称')
-        output = await self.client.handle('sharing_download', {'peerId': peer['id'], 'taskId': job['id'], 'index': 0})
-        self.assertEqual(json.loads(Path(output['path']).read_text()), job['outputs']['greet.reply'])
+        self.assertEqual(job['files'], [])
         unknown = await self.finish(peer, await self.submit(peer, loop, key='unknown', value='随便说点什么'))
         self.assertEqual(unknown['status'], 'success')
         self.assertEqual(len(unknown['outputs']['greet.reply']), 24)
         for run in self.host.store.get(loop['id'])['runs']:
             self.assertIn('sharedTask', run)
         self.assertEqual(self.host.store.get(loop['id'])['messages'], [])
+
+    async def test_large_python_data_output_remains_downloadable(self):
+        from loops_runtime.builtin_workflows import greeting
+        spec = greeting()
+        spec['scripts']['scripts/greeting.py'] = "result = 'x' * 100001"
+        loop = await self.build(spec=spec)
+        peer, _ = await self.connect()
+        job = await self.finish(peer, await self.submit(peer, loop))
+        self.assertEqual(job['status'], 'success')
+        self.assertEqual(job['outputs'], {})
+        self.assertEqual(len(job['files']), 1)
+        download = await self.client.handle('sharing_download', {'peerId': peer['id'], 'taskId': job['id'], 'index': job['files'][0]['index']})
+        self.assertEqual(json.loads(Path(download['path']).read_text()), 'x' * 100001)
 
     async def test_state_reads_local_interfaces_without_dns(self):
         # A slow or unavailable hostname resolver must never block the IPC event loop.
