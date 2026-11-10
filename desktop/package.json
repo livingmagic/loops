@@ -12,7 +12,7 @@
     "package:mac": "node scripts/package.mjs",
     "test:package": "node tests/integration/check-package.mjs",
     "test:coverage": "c8 node --test tests/*.test.mjs",
-    "test:ui": "electron tests/integration/loading-flows.cjs && electron tests/integration/model-connection.cjs"
+    "test:ui": "electron tests/integration/loading-flows.cjs && electron tests/integration/model-connection.cjs && electron tests/integration/workflow-lifecycle.cjs"
   },
   "main": "electron/main.mjs",
   "dependencies": {
