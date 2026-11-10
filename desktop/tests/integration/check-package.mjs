@@ -34,10 +34,33 @@ const { clientDataPaths } = await import(pathToFileURL(path.join(application, 'h
 assert.deepEqual(clientDataPaths({ isPackaged: true, appData: evidence, root: application, env: {} }), {
   dataDirectory: path.join(evidence, 'Loops'), workspaceRoot: path.join(evidence, 'Loops/workspaces'),
 });
-const options = { dataDirectory, configDirectory, runtimeDirectory: runtime };
+const options = { dataDirectory, configDirectory, workspaceRoot: path.join(dataDirectory, 'workspaces'), runtimeDirectory: runtime };
 let host = new Host(options);
 try {
-  assert.deepEqual(await host.action('list'), []);
+  const initial = await host.action('list');
+  assert.equal(initial.length, 1);
+  const greeting = initial[0];
+  assert.equal(greeting.builtin, 'greeting');
+  assert.equal(greeting.savedRevision, greeting.revision);
+  assert.deepEqual(greeting.runs, []);
+  async function runToCompletion(loopId, inputs) {
+    let listener, timer;
+    const completed = new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('Packaged workflow timed out.')), 30000);
+      listener = event => {
+        const run = event.loops?.find(item => item.id === loopId)?.runs.at(-1);
+        if (run && ['success', 'failed', 'stopped'].includes(run.status)) resolve(run);
+      };
+      host.on('event', listener);
+    });
+    completed.catch(() => {});
+    try { await host.action('start', { loopId, inputs }); return await completed; }
+    finally { clearTimeout(timer); host.off('event', listener); }
+  }
+  const greetingRun = await runToCompletion(greeting.id, { text: '天王盖地虎' });
+  assert.equal(greetingRun.status, 'success', greetingRun.reason);
+  assert.equal(greetingRun.artifacts[0].value, '小鸡炖蘑菇');
+  assert.equal(greetingRun.artifacts[0].path, undefined);
   const loop = await host.action('new');
   assert.equal(loop.workdir, path.join(await fs.realpath(dataDirectory), 'workspaces', loop.id));
   const definition = {
@@ -49,32 +72,18 @@ try {
       execution: { tool: 'python', script: 'scripts/convert.py' }, outputs: [{ id: 'report', label: '结果', path: 'result.txt' }], checks: [], onFailure: { action: 'stop' } }],
   };
   await host.engine.call('definition', { loopId: loop.id, definition });
-  let onEvent, timer;
-  const finished = new Promise((resolve, reject) => {
-    timer = setTimeout(() => reject(new Error('Package smoke timed out.')), 30000);
-    onEvent = (event) => {
-      const run = event.loops?.find((item) => item.id === loop.id)?.runs.at(-1);
-      if (run && ['success', 'failed', 'stopped'].includes(run.status)) resolve(run);
-    };
-    host.on('event', onEvent);
-  });
-  // Attach rejection handling before start, including when startup itself fails.
-  finished.catch(() => {});
-  let run;
-  try {
-    await host.action('start', { loopId: loop.id, inputs: { text: 'hello loops' } });
-    run = await finished;
-  } finally { clearTimeout(timer); host.off('event', onEvent); }
+  const run = await runToCompletion(loop.id, { text: 'hello loops' });
   assert.equal(run.status, 'success', run.reason);
   assert.equal(await fs.readFile(run.artifacts[0].path, 'utf8'), 'HELLO LOOPS');
   const saved = await host.action('save', { loopId: loop.id });
   await host.close();
   host = new Host(options);
   const restored = (await host.action('list')).find((item) => item.id === loop.id);
+  assert.equal((await host.action('list')).filter(item => item.builtin === 'greeting').length, 1);
   assert.equal(restored.savedRevision, saved.savedRevision);
   assert.deepEqual(restored.runs.find((item) => item.id === run.id), run);
   const report = { passed: true, app, dataDirectory, configDirectory, pythonDistributions: distributions,
-    realPython: true, handWrittenWorkflow: true, modelCalls: false, savedAndRestored: true,
+    builtinGreeting: true, realPython: true, handWrittenWorkflow: true, modelCalls: false, savedAndRestored: true,
     binaryDistributionReady: false, licenseReview: 'See THIRD_PARTY.md', runId: run.id };
   await fs.writeFile(path.join(evidence, 'package-smoke.json'), JSON.stringify(report, null, 2) + '\n');
   console.log(JSON.stringify(report));

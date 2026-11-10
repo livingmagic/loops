@@ -72,8 +72,8 @@ jobs:
           retention-days: 7
 
   desktop-ui:
-    runs-on: macos-latest
-    timeout-minutes: 10
+    runs-on: macos-15
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -83,11 +83,33 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: desktop/package-lock.json
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+      - name: Cache verified runtime archives
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            runtime/.python/downloads
+            ~/Library/Caches/electron
+          key: client-assets-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('runtime/setup-bundled-python.sh', 'desktop/package-lock.json') }}
+      - name: Install local execution environment
+        run: sh runtime/setup.sh
       - run: npm ci
         working-directory: desktop
-      - run: npm run build
+      - name: Build desktop once
+        run: npm run build
         working-directory: desktop
-      - run: npm run test:ui
+      - name: Run isolated UI and real workflow regressions
+        run: npm run test:ui
+        working-directory: desktop
+      - name: Prepare pinned bundled Python
+        run: sh runtime/setup-bundled-python.sh
+      - name: Package the tested build
+        run: npm run package:mac
+        working-directory: desktop
+      - name: Verify packaged execution and persistence
+        run: npm run test:package
         working-directory: desktop
 
   secrets:
