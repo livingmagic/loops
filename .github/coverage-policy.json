@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "python": {
+    "lines": 69,
+    "branches": 57
+  },
+  "javascript": {
+    "lines": 85,
+    "branches": 82
+  },
+  "changedLines": 80
+}

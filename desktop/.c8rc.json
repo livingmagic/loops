@@ -1,0 +1,8 @@
+{
+  "all": true,
+  "src": ["host", "src"],
+  "include": ["host/**/*.mjs", "src/**/*.js", "src/**/*.mjs"],
+  "exclude": [],
+  "reporter": ["text", "json", "lcov"],
+  "reports-dir": "../coverage/javascript"
+}

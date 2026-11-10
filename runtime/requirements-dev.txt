@@ -1,0 +1,2 @@
+# Test tooling only; never included in the packaged runtime.
+coverage==7.17.2

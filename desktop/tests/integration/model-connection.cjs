@@ -1,5 +1,6 @@
 // UI regression test with explicit backend doubles and isolated app data.
 const { app, BrowserWindow, ipcMain } = require('electron');
+setTimeout(() => { console.error('Electron UI regression timed out.'); app.exit(1); }, 60000).unref();
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -43,6 +44,10 @@ app.whenReady().then(async () => {
     fail = true; await click('测试连接'); await until('document.body.textContent.includes("测试中…")'); finishTest();
     await until('document.querySelector(".model-form [role=alert]")?.textContent.includes("测试服务拒绝请求")');
     assert.equal(await evaluate('document.querySelector(".model-form fieldset").disabled'), false);
-    console.log('Model connection UI checks passed (explicit backend doubles).');
+    await evaluate('document.querySelector(".settings-window").click()');
+    assert.equal(await evaluate('!!document.querySelector(".settings-window")'), true);
+    await evaluate('document.querySelector(".dialog-backdrop").click()');
+    await until('!document.querySelector(".settings-window")');
+    console.log('Model connection and settings dismissal UI checks passed (explicit backend doubles).');
   } finally { window.destroy(); fs.rmSync(directory,{recursive:true,force:true}); app.quit(); }
 }).catch(error => { console.error(error); app.exit(1); });

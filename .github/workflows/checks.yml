@@ -14,13 +14,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  desktop-runtime:
+  coverage:
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
@@ -31,28 +32,63 @@ jobs:
           python-version: '3.13'
       - name: Install runtime
         working-directory: runtime
-        run: sh setup.sh
+        run: |
+          sh setup.sh
+          .venv/bin/python -m pip install --index-url https://pypi.org/simple -r requirements-dev.txt
       - name: Audit Python dependencies
         shell: bash
         run: |
           python -m venv "$RUNNER_TEMP/pip-audit"
           "$RUNNER_TEMP/pip-audit/bin/python" -m pip install --index-url https://pypi.org/simple pip-audit==2.10.1
           "$RUNNER_TEMP/pip-audit/bin/pip-audit" -r runtime/requirements.lock --no-deps --disable-pip --strict --progress-spinner off
-      - name: Test runtime
-        working-directory: runtime
-        run: .venv/bin/python -m unittest discover -s tests -v
       - name: Install desktop
         working-directory: desktop
         run: npm ci
       - name: Audit desktop dependencies
         working-directory: desktop
         run: npm audit --audit-level=moderate
-      - name: Test desktop
+      - name: Test coverage gate itself
+        run: runtime/.venv/bin/python -m unittest discover -s scripts/tests -v
+      - name: Run existing suites with coverage
+        run: runtime/.venv/bin/python scripts/run-coverage.py
+      - name: Enforce total and changed-line coverage
+        env:
+          COVERAGE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          base="$COVERAGE_BASE"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base="$(git rev-parse HEAD^)"
+          fi
+          runtime/.venv/bin/python scripts/check-coverage.py --base "$base"
+      - name: Save coverage diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage
+          path: |
+            coverage/python/coverage.json
+            coverage/javascript/lcov.info
+          if-no-files-found: warn
+          retention-days: 7
+
+  desktop-ui:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
         working-directory: desktop
-        run: npm test
-      - name: Build desktop
+      - run: npm run build
         working-directory: desktop
-        run: npm run build
+      - run: npm run test:ui
+        working-directory: desktop
 
   secrets:
     runs-on: ubuntu-latest
