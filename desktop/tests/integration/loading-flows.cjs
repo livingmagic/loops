@@ -1,6 +1,7 @@
 // UI regression harness. All backend responses below are explicit test doubles.
 // Run with Electron after building desktop/dist. Never uses installed Loops data.
 const { app, BrowserWindow, ipcMain } = require('electron');
+setTimeout(() => { console.error('Electron UI regression timed out.'); app.exit(1); }, 60000).unref();
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -31,6 +32,7 @@ ipcMain.handle('test:request', async (_, method, params) => {
     return [];
   }
   if (method === 'settings') return {defaultModelId:'configured',models:[{id:'configured',name:'Test model',configured:true,thinkingLevel:'off',thinkingLevels:['off']}],providers:[],services:[]};
+  if (method === 'sharing_state') return {clients:[],peers:[],catalog:[]};
   if (method === 'connector_list') return [{manifest:{id:'example',name:'Available MCP',type:'mcp'},enabled:true,status:'connected'}];
   if (method === 'connector_presets') return [];
   if (method === 'agent_plugins') {

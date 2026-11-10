@@ -6,12 +6,40 @@
 
 Node.js 22.19+、Python 3.13；先执行 `runtime/setup.sh` 和 `desktop/` 下的 `npm ci`。客户端部分测试会启动 Python，不能省略执行层安装。
 
+常规检查：
+
 ```sh
 (cd runtime && .venv/bin/python -m unittest discover -s tests -v)
 (cd desktop && npm test && npm run build)
 ```
 
-普通自动测试不需要真实模型账号。真实模型、外部投递及安装包验收由维护者在受控环境中单独执行；不要在来自外部的 PR 中运行带凭证的任务。
+与 PR 门禁一致的检查，从仓库根目录执行：
+
+```sh
+runtime/.venv/bin/python -m pip install -r runtime/requirements-dev.txt
+runtime/.venv/bin/python -m unittest discover -s scripts/tests -v
+runtime/.venv/bin/python scripts/run-coverage.py
+runtime/.venv/bin/python scripts/check-coverage.py --base origin/main
+(cd desktop && npm run build && npm run test:ui)
+```
+
+覆盖率采集会运行两套现有测试，临时安装启动钩子采集 Python 子进程，并在退出时移除钩子；不要在同一虚拟环境中并行执行两次采集。若进程被强制终止，下次执行会提示如何处理残留钩子。
+
+## PR 质量门禁
+
+PR 必须通过 `coverage`、`desktop-ui`、`secrets`，且分支保持与最新 main 同步。
+
+- `coverage`：现有 Python、Node 行为和跨进程集成测试、依赖审计，以及总体行/分支覆盖率和 PR 改动行检查。
+- `desktop-ui`：生产构建后运行隔离 Electron 界面回归，验证加载失败恢复、插件/自动化异步加载、模型连接反馈和设置窗口关闭。后端为明确的测试替身。
+- `secrets`：检查历史中是否泄露密钥。
+
+覆盖率唯一数值来源是 [coverage-policy.json](.github/coverage-policy.json)。Python 与 JavaScript 分别计算总体行和分支覆盖率，门槛基于首次完整采集结果固定；各语言本次新增/修改的可执行行还需达到 `changedLines`。没有可执行行变更时，该项不适用。首次安装门禁的 PR 建立基线；之后 PR 不能降低已存在的门槛或变更采集范围来绕过检查。
+
+统计范围：Python 为 `runtime/loops_runtime/**/*.py`；JavaScript 为 `desktop/host/**/*.mjs` 和 `desktop/src/**/*.js`、`*.mjs`。完全未加载的范围内文件仍计入分母；测试、依赖、产物和原型不在范围内。React JSX 和 Electron 入口目前由构建及界面回归保障，不计入上述百分比。采集缺失或源文件记录缺失会直接失败。
+
+核心执行、版本保存恢复、密钥和共享授权的行为断言仍需维护，覆盖率通过不替代这些检查。失败时先看 CI 的文件/行号提示，按需下载保留 7 天的覆盖率诊断附件；补有效测试或修复行为，不为凑数编写无效断言。阈值或统计范围的调整需要单独解释原因和风险，不能与业务改动混在一起悄悄放宽。
+
+普通自动测试不需要真实模型账号。所有测试隔离数据库、配置与工作目录，不复用已安装客户端数据。真实模型、外部投递及完整安装包验收由维护者在受控环境中单独执行；不要在来自外部的 PR 中运行带凭证的任务。
 
 ## 提交变更
 

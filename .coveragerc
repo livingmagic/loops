@@ -1,0 +1,16 @@
+[run]
+branch = True
+parallel = True
+source = ${LOOPS_COVERAGE_SOURCE}
+relative_files = True
+sigterm = True
+patch = subprocess
+
+[paths]
+runtime =
+    runtime/loops_runtime
+    */runtime/loops_runtime
+    loops_runtime
+
+[report]
+show_missing = True
